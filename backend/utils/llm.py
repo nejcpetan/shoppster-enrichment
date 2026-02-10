@@ -1,3 +1,10 @@
+"""
+LLM utilities — Anthropic Vertex AI
+
+Uses AnthropicVertex SDK directly for LLM calls.
+Haiku 4.5 for most tasks (fast, cheap). Sonnet 4.5 available for complex extraction.
+LangGraph handles orchestration separately — no LangChain chat model needed.
+"""
 
 import os
 import json
@@ -10,63 +17,71 @@ load_dotenv()
 
 T = TypeVar('T', bound=BaseModel)
 
-# Claude Sonnet 4.5 on Vertex AI
-VERTEX_MODEL = "claude-sonnet-4-5@20250929"
+# Model IDs on Google Vertex AI
+HAIKU_MODEL = "claude-haiku-4-5"
+SONNET_MODEL = "claude-sonnet-4-5@20250929"
 
-def get_client():
-    # Support both naming conventions: VERTEX_* (used in .env) and GOOGLE_CLOUD_* (SDK convention)
+# Backward-compat alias
+VERTEX_MODEL = SONNET_MODEL
+
+
+def _get_vertex_config():
+    """Read Vertex AI project/region from env."""
     project_id = os.getenv("VERTEX_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
     region = os.getenv("VERTEX_LOCATION") or os.getenv("GOOGLE_CLOUD_REGION")
-    
     if not project_id or not region:
         raise ValueError(
-            "Project ID and region must be set. "
-            "Set VERTEX_PROJECT_ID + VERTEX_LOCATION (or GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_REGION) in .env"
+            "Set VERTEX_PROJECT_ID + VERTEX_LOCATION in .env "
+            "(or GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_REGION)"
         )
-        
+    return project_id, region
+
+
+def get_raw_client() -> AnthropicVertex:
+    """Get an AnthropicVertex client instance."""
+    project_id, region = _get_vertex_config()
     return AnthropicVertex(region=region, project_id=project_id)
 
-def classify_with_schema(prompt: str, system: str, schema: Type[T]) -> T:
-    """
-    Calls Claude Sonnet 4.5 on Vertex AI to classify/extract data matching a Pydantic schema.
-    Returns a validated Pydantic model instance.
-    """
-    client = get_client()
 
-    # Get the JSON schema from the Pydantic model
-    json_schema = schema.model_json_schema()
+# Backward-compat alias
+get_client = get_raw_client
+
+
+def classify_with_schema(prompt: str, system: str, schema: Type[T], model: str = "haiku") -> T:
+    """
+    Calls Claude via AnthropicVertex and returns a validated Pydantic model instance.
+    Uses JSON mode with schema instruction appended to system prompt.
     
-    # Force the model to output JSON
-    messages = [
-        {"role": "user", "content": prompt}
-    ]
+    model: "haiku" (default, cheaper) or "sonnet" (for complex extraction)
+    """
+    client = get_raw_client()
+    model_id = HAIKU_MODEL if model == "haiku" else SONNET_MODEL
 
-    # Append schema instruction to system prompt
-    full_system_prompt = f"""{system}
+    json_schema = schema.model_json_schema()
+
+    full_system = f"""{system}
 
 Respond with ONLY valid JSON matching this schema:
-{json.dumps(json_schema, indent=2)}
-"""
+{json.dumps(json_schema, indent=2)}"""
 
     try:
         response = client.messages.create(
-            model=VERTEX_MODEL, 
-            max_tokens=1024,
-            system=full_system_prompt,
-            messages=messages
+            model=model_id,
+            max_tokens=2048,
+            system=full_system,
+            messages=[{"role": "user", "content": prompt}]
         )
 
         content = response.content[0].text
-        
-        # Simple cleanup if Claude adds markdown fences
+
+        # Clean markdown fences if present
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
         elif "```" in content:
             content = content.split("```")[1].split("```")[0].strip()
 
-        # Parse and validate
         return schema.model_validate_json(content)
 
     except Exception as e:
-        print(f"Vertex AI LLM Error (model={VERTEX_MODEL}): {e}")
+        print(f"LLM Error (model={model_id}): {e}")
         raise e

@@ -1,15 +1,13 @@
+"""
+EAN Lookup utility — scrapes barcodelookup.com via Firecrawl.
+Returns brand, product name, and category.
+"""
 
 import os
-import json
 from firecrawl import FirecrawlApp
-from pydantic import BaseModel
-from typing import Optional
 from utils.llm import classify_with_schema
+from schemas import BarcodeLookupResult
 
-class BarcodeLookupResult(BaseModel):
-    brand: Optional[str] = None
-    product_name: Optional[str] = None
-    category: Optional[str] = None
 
 async def lookup_ean(ean: str) -> dict | None:
     """
@@ -23,20 +21,23 @@ async def lookup_ean(ean: str) -> dict | None:
 
     try:
         app = FirecrawlApp(api_key=api_key)
-        
-        # Scrape the page
+
         url = f"https://www.barcodelookup.com/{ean}"
         print(f"Scraping {url} for EAN lookup...")
-        
-        scrape_result = app.scrape_url(url, params={"formats": ["markdown"]})
-        
-        if not scrape_result or 'markdown' not in scrape_result:
+
+        scraped = app.scrape(url, formats=['markdown'])
+
+        # Handle both Document object and dict response
+        markdown = ''
+        if hasattr(scraped, 'markdown') and scraped.markdown:
+            markdown = scraped.markdown
+        elif isinstance(scraped, dict):
+            markdown = scraped.get('markdown', '')
+
+        if not markdown:
             print("Firecrawl returned no markdown.")
             return None
-            
-        markdown = scrape_result['markdown']
-        
-        # Use LLM to parsing
+
         system_prompt = """Extract product information from this barcodelookup.com page content.
 Return ONLY valid JSON with these fields:
 - brand: the manufacturer/brand name
@@ -44,7 +45,7 @@ Return ONLY valid JSON with these fields:
 - category: the product category
 If the information is not found, set the field to null."""
 
-        user_prompt = f"Extract product info from this content:\n\n{markdown[:15000]}" # Limit context if needed
+        user_prompt = f"Extract product info from this content:\n\n{markdown[:15000]}"
 
         result = classify_with_schema(
             prompt=user_prompt,
@@ -54,7 +55,7 @@ If the information is not found, set the field to null."""
 
         if result.brand or result.product_name:
             return result.model_dump()
-            
+
         return None
 
     except Exception as e:

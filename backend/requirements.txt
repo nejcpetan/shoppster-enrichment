@@ -8,3 +8,5 @@ python-multipart
 anthropic[vertex]
 tavily-python
 firecrawl-py
+langgraph
+google-cloud-aiplatform
