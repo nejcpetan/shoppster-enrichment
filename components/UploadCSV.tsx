@@ -73,9 +73,9 @@ export function UploadCSV({ onUploadSuccess }: { onUploadSuccess: () => void }) 
     };
 
     return (
-        <Card className={`w-full bg-zinc-900/50 border-2 border-dashed transition-all duration-300 relative overflow-hidden group 
-        ${isDragOver ? "border-purple-500 bg-purple-500/5" : "border-zinc-800 hover:border-zinc-700"}
-        ${file ? "border-solid border-purple-500/50" : ""}
+        <Card className={`w-full bg-zinc-900/50 border border-dashed transition-all duration-300 relative overflow-hidden group rounded-lg
+        ${isDragOver ? "border-zinc-500 bg-zinc-900" : "border-zinc-800 hover:border-zinc-700"}
+        ${file ? "border-solid border-zinc-700" : ""}
     `}>
             <CardContent className="p-0">
                 <div
@@ -87,15 +87,15 @@ export function UploadCSV({ onUploadSuccess }: { onUploadSuccess: () => void }) 
                     {/* Left Side: Icon & Text */}
                     <div className="flex items-center gap-4 flex-1">
                         <div className={`w-10 h-10 rounded-full flex items-center justify-center border transition-all duration-500
-                ${uploading ? "bg-purple-900/20 border-purple-500/50" :
-                                file ? "bg-purple-500/10 border-purple-500/50" : "bg-zinc-800 border-zinc-700 text-zinc-400"}
+                ${uploading ? "bg-zinc-800 border-zinc-700" :
+                                file ? "bg-zinc-100 border-zinc-200 text-black shadow-sm" : "bg-zinc-900 border-zinc-800 text-zinc-600"}
              `}>
                             {uploading ? (
-                                <Loader2 className="w-5 h-5 animate-spin text-purple-400" />
+                                <Loader2 className="w-5 h-5 animate-spin text-zinc-400" />
                             ) : message === "Upload successful!" ? (
-                                <CheckCircle2 className="w-5 h-5 text-green-400" />
+                                <CheckCircle2 className="w-5 h-5 text-emerald-600" />
                             ) : file ? (
-                                <FileText className="w-5 h-5 text-purple-400" />
+                                <FileText className="w-5 h-5 text-black fill-zinc-200/50" />
                             ) : (
                                 <Upload className="w-5 h-5" />
                             )}
@@ -122,10 +122,10 @@ export function UploadCSV({ onUploadSuccess }: { onUploadSuccess: () => void }) 
                                 onClick={handleUpload}
                                 disabled={uploading}
                                 size="sm"
-                                className="bg-purple-600 hover:bg-purple-500 text-white shadow-lg shadow-purple-900/20"
+                                className="bg-zinc-100 hover:bg-white text-zinc-950 shadow-sm font-medium border border-transparent"
                             >
                                 {uploading ? "Processing" : "Start Import"}
-                                {!uploading && <Sparkles className="w-3 h-3 ml-2" />}
+                                {!uploading && <Sparkles className="w-3 h-3 ml-2 fill-current" />}
                             </Button>
                         )}
 
@@ -150,7 +150,7 @@ export function UploadCSV({ onUploadSuccess }: { onUploadSuccess: () => void }) 
 
                 {/* Progress Bar (Visual only for now) */}
                 {uploading && (
-                    <div className="absolute bottom-0 left-0 h-1 bg-purple-500 animate-pulse w-full"></div>
+                    <div className="absolute bottom-0 left-0 h-0.5 bg-zinc-200 animate-pulse w-full"></div>
                 )}
             </CardContent>
         </Card>

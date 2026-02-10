@@ -185,7 +185,7 @@ export function ProductTable({ refreshTrigger }: { refreshTrigger: number }) {
             </div>
 
             {/* Main Table */}
-            <div className="w-full rounded-xl border border-zinc-800 bg-zinc-900/40 backdrop-blur-sm overflow-hidden shadow-2xl shadow-black/20 flex-1 relative">
+            <div className="w-full rounded-lg border border-zinc-800 bg-zinc-900/40 backdrop-blur-sm overflow-hidden shadow-2xl shadow-black/20 flex-1 relative">
                 <div className="overflow-x-auto h-full max-h-[600px]">
                     <Table className="w-full whitespace-nowrap">
                         <TableHeader className="bg-zinc-950/80 border-b border-zinc-800/80 sticky top-0 z-10 backdrop-blur-md">

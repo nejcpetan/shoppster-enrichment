@@ -318,7 +318,7 @@ export function ProductDetail({ productId }: ProductDetailProps) {
 
             {/* Live Agent Progress Banner */}
             {isProcessing && (
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm p-4 space-y-3">
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm p-4 space-y-3">
                     {/* Pipeline Progress */}
                     <div className="flex items-center gap-2">
                         {PHASES.map((phase, i) => {
