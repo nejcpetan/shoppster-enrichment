@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pandas
+openpyxl
+python-dotenv
+pydantic
+python-multipart
+anthropic[vertex]
+tavily-python
+firecrawl-py
