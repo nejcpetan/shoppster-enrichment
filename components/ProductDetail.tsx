@@ -301,11 +301,16 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                     </Button>
                     <Button
                         size="sm"
-                        className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white"
+                        className={`
+                            relative overflow-hidden transition-all duration-300 shadow-lg font-medium tracking-wide
+                            ${enriching || isProcessing
+                                ? 'bg-zinc-900 text-zinc-500 cursor-not-allowed border border-zinc-800'
+                                : 'bg-zinc-100 hover:bg-white text-zinc-950 border border-transparent shadow-zinc-500/10'}
+                        `}
                         onClick={runFullEnrichment}
                         disabled={enriching || isProcessing}
                     >
-                        {enriching || isProcessing ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Zap className="w-4 h-4 mr-1" />}
+                        {enriching || isProcessing ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Zap className="w-4 h-4 mr-1 fill-current" />}
                         Run Full Pipeline
                     </Button>
                 </div>

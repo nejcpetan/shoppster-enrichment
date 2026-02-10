@@ -359,10 +359,7 @@ export function ProductTable({ refreshTrigger }: { refreshTrigger: number }) {
             </div>
 
             {/* Footer */}
-            <div className="flex items-center justify-between text-[10px] text-zinc-600 uppercase tracking-widest px-1">
-                <div>LangGraph Pipeline v2.0</div>
-                <div>Haiku 4.5 · Tavily · Firecrawl</div>
-            </div>
+
         </div>
     );
 }
