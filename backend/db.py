@@ -2,12 +2,16 @@ import sqlite3
 import json
 import os
 from datetime import datetime
+from events import event_bus
 
 DB_PATH = "products.db"
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
+    # WAL mode on every connection — allows concurrent reads during writes
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 def init_db():
@@ -33,15 +37,20 @@ def init_db():
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    
+
     # Migration: add current_step column if it doesn't exist (for existing DBs)
     try:
         c.execute("ALTER TABLE products ADD COLUMN current_step TEXT")
     except sqlite3.OperationalError:
         pass  # Column already exists
-    
+
     conn.commit()
     conn.close()
+
+
+def _publish_event(product_id: int, event: dict):
+    """Publish an SSE event. Thread-safe — event bus handles cross-thread delivery."""
+    event_bus.publish_product_event(product_id, event)
 
 
 def update_step(product_id: int, status: str, step: str):
@@ -54,6 +63,12 @@ def update_step(product_id: int, status: str, step: str):
     conn.commit()
     conn.close()
 
+    _publish_event(product_id, {
+        "type": "status",
+        "status": status,
+        "current_step": step,
+    })
+
 
 def append_log(product_id: int, entry: dict):
     """Append a log entry to the product's enrichment_log."""
@@ -64,6 +79,11 @@ def append_log(product_id: int, entry: dict):
     conn.execute("UPDATE products SET enrichment_log = ? WHERE id = ?", (json.dumps(existing), product_id))
     conn.commit()
     conn.close()
+
+    _publish_event(product_id, {
+        "type": "log",
+        "entry": entry,
+    })
 
 
 if __name__ == "__main__":

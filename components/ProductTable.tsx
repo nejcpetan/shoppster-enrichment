@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
     Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from "@/components/ui/table";
@@ -13,6 +13,7 @@ import {
     Zap, Loader2, X, AlertTriangle, Brain, Search, FileText, ShieldCheck
 } from "lucide-react";
 import { fetchAPI } from "@/lib/api";
+import { useProductsStream } from "@/lib/sse";
 import { useRouter } from "next/navigation";
 
 // Phase mapping for pipeline progress dots
@@ -24,6 +25,7 @@ const PHASES = [
 ];
 
 const PROCESSING_STATUSES = ['enriching', 'classifying', 'searching', 'extracting', 'validating'];
+const TERMINAL_STATUSES = ['done', 'error', 'needs_review'];
 
 function getPhaseIndex(status: string): number {
     const idx = PHASES.findIndex(p => p.key === status);
@@ -43,16 +45,33 @@ export function ProductTable({ refreshTrigger }: { refreshTrigger: number }) {
         loadProducts();
     }, [refreshTrigger]);
 
-    // Auto-refresh while products are being processed
-    useEffect(() => {
-        const hasProcessing = products.some(p => PROCESSING_STATUSES.includes(p.status));
-        if (hasProcessing || processing) {
-            const interval = setInterval(() => {
+    // SSE: real-time status updates for all products
+    useProductsStream({
+        onStatusChange: useCallback((data: { product_id: number; status: string; current_step: string | null }) => {
+            setProducts(prev => prev.map(p => {
+                if (p.id === data.product_id) {
+                    return { ...p, status: data.status, current_step: data.current_step };
+                }
+                return p;
+            }));
+
+            // On terminal status, refetch full data to get extraction/validation results
+            if (TERMINAL_STATUSES.includes(data.status)) {
                 loadProducts(true);
-            }, 2000); // faster polling for agent step updates
-            return () => clearInterval(interval);
-        }
-    }, [products, processing]);
+            }
+
+            // Clear processing flag when no more products are processing
+            if (TERMINAL_STATUSES.includes(data.status)) {
+                setProducts(prev => {
+                    const stillProcessing = prev.some(p =>
+                        p.id !== data.product_id && PROCESSING_STATUSES.includes(p.status)
+                    );
+                    if (!stillProcessing) setProcessing(false);
+                    return prev;
+                });
+            }
+        }, []),
+    });
 
     const loadProducts = async (silent = false) => {
         if (!silent) setLoading(true);
@@ -90,10 +109,6 @@ export function ProductTable({ refreshTrigger }: { refreshTrigger: number }) {
                 body: JSON.stringify({ product_ids: Array.from(selectedIds) })
             });
             setSelectedIds(new Set());
-            setTimeout(() => {
-                loadProducts(true);
-                setTimeout(() => setProcessing(false), 2000);
-            }, 500);
         } catch (e) {
             console.error(e);
             setProcessing(false);

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { fetchAPI } from "@/lib/api";
+import { useProductStream } from "@/lib/sse";
 import {
     Card,
     CardContent,
@@ -60,14 +61,8 @@ function getPhaseIndex(status: string): number {
 export function ProductDetail({ productId }: ProductDetailProps) {
     const [product, setProduct] = useState<any>(null);
     const [loading, setLoading] = useState(true);
-    const [enriching, setEnriching] = useState(false);
-    const [searching, setSearching] = useState(false);
-    const [extracting, setExtracting] = useState(false);
-    const [validating, setValidating] = useState(false);
-    const [classifying, setClassifying] = useState(false);
     const [resetting, setResetting] = useState(false);
     const [logExpanded, setLogExpanded] = useState(false);
-    const logEndRef = useState<HTMLDivElement | null>(null);
     const [imageModalOpen, setImageModalOpen] = useState(false);
     const [selectedImage, setSelectedImage] = useState<string | null>(null);
 
@@ -75,14 +70,29 @@ export function ProductDetail({ productId }: ProductDetailProps) {
         loadProduct();
     }, [productId]);
 
-    // Auto-refresh when product is in a processing state — 2s polling
-    useEffect(() => {
-        if (!product) return;
-        if (PROCESSING_STATUSES.includes(product.status)) {
-            const interval = setInterval(() => loadProduct(), 2000);
-            return () => clearInterval(interval);
-        }
-    }, [product?.status]);
+    // SSE: real-time status and log updates
+    useProductStream({
+        productId,
+        onStatus: useCallback((data: { status: string; current_step: string | null }) => {
+            setProduct((prev: any) => {
+                if (!prev) return prev;
+                return { ...prev, status: data.status, current_step: data.current_step };
+            });
+        }, []),
+        onLog: useCallback((entry: Record<string, unknown>) => {
+            setProduct((prev: any) => {
+                if (!prev) return prev;
+                const existingLog = prev.enrichment_log ? JSON.parse(prev.enrichment_log) : [];
+                existingLog.push(entry);
+                return { ...prev, enrichment_log: JSON.stringify(existingLog) };
+            });
+        }, []),
+        onComplete: useCallback(() => {
+            // Refetch full product data on terminal status
+            loadProduct();
+        }, [productId]),
+        enabled: !!product,
+    });
 
     // Auto-expand enrichment log while processing
     useEffect(() => {
@@ -95,13 +105,6 @@ export function ProductDetail({ productId }: ProductDetailProps) {
         try {
             const data = await fetchAPI(`/products/${productId}`);
             setProduct(data);
-            if (data.status !== 'classifying') setClassifying(false);
-            if (data.status !== 'searching') setSearching(false);
-            if (data.status !== 'extracting') setExtracting(false);
-            if (data.status !== 'validating') setValidating(false);
-            if (!PROCESSING_STATUSES.includes(data.status)) {
-                setEnriching(false);
-            }
         } catch (error) {
             console.error("Failed to load product", error);
         } finally {
@@ -110,57 +113,42 @@ export function ProductDetail({ productId }: ProductDetailProps) {
     };
 
     const runClassification = async () => {
-        setClassifying(true);
         try {
             await fetchAPI(`/products/${productId}/classify`, { method: "POST" });
-            setTimeout(loadProduct, 2000);
         } catch (error) {
             console.error("Classification failed", error);
-            setClassifying(false);
         }
     };
 
     const runFullEnrichment = async () => {
-        setEnriching(true);
         try {
             await fetchAPI(`/products/${productId}/enrich`, { method: "POST" });
-            setTimeout(loadProduct, 2000);
         } catch (error) {
             console.error("Enrichment failed", error);
-            setEnriching(false);
         }
     };
 
     const runSearch = async () => {
-        setSearching(true);
         try {
             await fetchAPI(`/products/${productId}/search`, { method: "POST" });
-            setTimeout(loadProduct, 2000);
         } catch (error) {
             console.error("Search failed", error);
-            setSearching(false);
         }
     }
 
     const runExtraction = async () => {
-        setExtracting(true);
         try {
             await fetchAPI(`/products/${productId}/extract`, { method: "POST" });
-            setTimeout(loadProduct, 2000);
         } catch (error) {
             console.error("Extraction failed", error);
-            setExtracting(false);
         }
     }
 
     const runValidation = async () => {
-        setValidating(true);
         try {
             await fetchAPI(`/products/${productId}/validate`, { method: "POST" });
-            setTimeout(loadProduct, 2000);
         } catch (error) {
             console.error("Validation failed", error);
-            setValidating(false);
         }
     }
 
@@ -303,14 +291,14 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                         size="sm"
                         className={`
                             relative overflow-hidden transition-all duration-300 shadow-lg font-medium tracking-wide
-                            ${enriching || isProcessing
+                            ${isProcessing
                                 ? 'bg-zinc-900 text-zinc-500 cursor-not-allowed border border-zinc-800'
                                 : 'bg-zinc-100 hover:bg-white text-zinc-950 border border-transparent shadow-zinc-500/10'}
                         `}
                         onClick={runFullEnrichment}
-                        disabled={enriching || isProcessing}
+                        disabled={isProcessing}
                     >
-                        {enriching || isProcessing ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Zap className="w-4 h-4 mr-1 fill-current" />}
+                        {isProcessing ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Zap className="w-4 h-4 mr-1 fill-current" />}
                         Run Full Pipeline
                     </Button>
                 </div>
@@ -371,7 +359,7 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                             </div>
                             {classification ? <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 px-2 py-0.5"><CheckCircle2 className="w-3 h-3 mr-1" /> Done</Badge> :
                                 product.status === 'classifying' ? <Badge className="bg-purple-500/10 text-purple-400 border-purple-500/20 px-2 py-0.5"><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Running</Badge> :
-                                    <Button size="sm" onClick={runClassification} disabled={classifying || isProcessing} className="bg-purple-600 hover:bg-purple-500 text-white h-7 text-xs">{classifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}</Button>}
+                                    <Button size="sm" onClick={runClassification} disabled={isProcessing} className="bg-purple-600 hover:bg-purple-500 text-white h-7 text-xs">{isProcessing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}</Button>}
                         </CardHeader>
                         {classification && (
                             <CardContent className="pt-4 space-y-2">
@@ -398,7 +386,7 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                             </div>
                             {searchResults ? <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 px-2 py-0.5"><CheckCircle2 className="w-3 h-3 mr-1" /> {searchResults.results?.length || 0} URLs</Badge> :
                                 product.status === 'searching' ? <Badge className="bg-blue-500/10 text-blue-400 border-blue-500/20 px-2 py-0.5"><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Searching</Badge> :
-                                    <Button size="sm" onClick={runSearch} disabled={searching || !classification || isProcessing} className="bg-blue-600 hover:bg-blue-500 text-white h-7 text-xs">{searching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}</Button>}
+                                    <Button size="sm" onClick={runSearch} disabled={!classification || isProcessing} className="bg-blue-600 hover:bg-blue-500 text-white h-7 text-xs">{isProcessing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}</Button>}
                         </CardHeader>
                         {searchResults && searchResults.results?.length > 0 && (
                             <CardContent className="pt-3 space-y-1">
@@ -426,7 +414,7 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                             </div>
                             {extraction ? <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 px-2 py-0.5"><CheckCircle2 className="w-3 h-3 mr-1" /> Done</Badge> :
                                 product.status === 'extracting' ? <Badge className="bg-orange-500/10 text-orange-400 border-orange-500/20 px-2 py-0.5"><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Extracting</Badge> :
-                                    <Button size="sm" onClick={runExtraction} disabled={extracting || !searchResults || isProcessing} className="bg-orange-600 hover:bg-orange-500 text-white h-7 text-xs">{extracting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}</Button>}
+                                    <Button size="sm" onClick={runExtraction} disabled={!searchResults || isProcessing} className="bg-orange-600 hover:bg-orange-500 text-white h-7 text-xs">{isProcessing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}</Button>}
                         </CardHeader>
                     </Card>
 
@@ -438,7 +426,7 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                             </div>
                             {validation ? <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 px-2 py-0.5"><CheckCircle2 className="w-3 h-3 mr-1" /> Done</Badge> :
                                 product.status === 'validating' ? <Badge className="bg-green-500/10 text-green-400 border-green-500/20 px-2 py-0.5"><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Validating</Badge> :
-                                    <Button size="sm" onClick={runValidation} disabled={validating || !extraction || isProcessing} className="bg-green-600 hover:bg-green-500 text-white h-7 text-xs">{validating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}</Button>}
+                                    <Button size="sm" onClick={runValidation} disabled={!extraction || isProcessing} className="bg-green-600 hover:bg-green-500 text-white h-7 text-xs">{isProcessing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}</Button>}
                         </CardHeader>
                         {validation && (
                             <CardContent className="pt-4 space-y-2">

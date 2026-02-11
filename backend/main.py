@@ -7,12 +7,14 @@ import json
 import os
 import logging
 import asyncio
+import time
 from datetime import datetime
 from typing import List
 from pydantic import BaseModel
-from db import get_db_connection, init_db
+from db import get_db_connection, init_db, update_step
 from schemas import ProductResponse
 from graph import enrichment_pipeline, ProductState
+from events import event_bus, format_sse
 
 # --- Logging ---
 logging.basicConfig(
@@ -44,8 +46,22 @@ class BatchProcessRequest(BaseModel):
     product_ids: List[int]
 
 @app.on_event("startup")
-def startup_event():
+async def startup_event():
     init_db()
+    # Register main event loop with event bus for thread-safe SSE delivery
+    event_bus.set_loop(asyncio.get_running_loop())
+
+# --- Helper: run async pipeline in a separate thread ---
+
+def _run_async_in_thread(async_fn, *args):
+    """Run an async function in a new event loop in the current thread.
+    This isolates blocking I/O (SQLite, sync HTTP) from the main event loop."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(async_fn(*args))
+    finally:
+        loop.close()
 
 # --- Upload ---
 
@@ -97,11 +113,89 @@ def get_products():
     conn.close()
     return [dict(p) for p in products]
 
-# --- Enrichment Pipeline ---
+# --- SSE Endpoints ---
 
-async def run_full_enrichment(product_id: int):
+@app.get("/api/events/products")
+async def sse_products():
+    """Global SSE stream — emits status/log events for all products."""
+    async def event_generator():
+        queue = event_bus.subscribe("products")
+        try:
+            yield format_sse("connected", {"message": "Connected to global product stream"})
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    event_type = event.get("type", "status")
+                    yield format_sse(event_type, event)
+                except asyncio.TimeoutError:
+                    # Keep-alive comment
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            event_bus.unsubscribe("products", queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/events/products/{product_id}")
+async def sse_product(product_id: int):
+    """Per-product SSE stream — emits status/log events for a single product."""
+    async def event_generator():
+        # Send initial snapshot
+        conn = get_db_connection()
+        product = conn.execute("SELECT id, status, current_step, enrichment_log FROM products WHERE id = ?", (product_id,)).fetchone()
+        conn.close()
+        if product:
+            snapshot = {
+                "product_id": product_id,
+                "status": product["status"],
+                "current_step": product["current_step"],
+            }
+            yield format_sse("snapshot", snapshot)
+
+        channel = f"product:{product_id}"
+        queue = event_bus.subscribe(channel)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    event_type = event.get("type", "status")
+                    yield format_sse(event_type, event)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            event_bus.unsubscribe(channel, queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# --- Enrichment Pipeline ---
+# These functions are SYNC and run in a thread (via BackgroundTasks)
+# to keep the main event loop free for SSE streams and API requests.
+
+def run_full_enrichment(product_id: int):
     """
     Invokes the LangGraph enrichment pipeline for a single product.
+    Runs in a thread — all blocking I/O is isolated from the main event loop.
     """
     try:
         # Load product name for logging
@@ -115,14 +209,8 @@ async def run_full_enrichment(product_id: int):
         logger.info(f"[Product {product_id}] ▶ PIPELINE START — {product_name}")
         logger.info(f"{'='*60}")
 
-        # Set initial status
-        conn = get_db_connection()
-        conn.execute(
-            "UPDATE products SET status = 'enriching', current_step = 'Initializing pipeline...', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (product_id,)
-        )
-        conn.commit()
-        conn.close()
+        # Set initial status (publishes SSE event via thread-safe event bus)
+        update_step(product_id, "enriching", "Initializing pipeline...")
 
         # Build initial state
         initial_state: ProductState = {
@@ -132,8 +220,8 @@ async def run_full_enrichment(product_id: int):
             "error": None,
         }
 
-        # Run the LangGraph pipeline
-        result = await enrichment_pipeline.ainvoke(initial_state)
+        # Run the async LangGraph pipeline in its own event loop (in this thread)
+        result = _run_async_in_thread(enrichment_pipeline.ainvoke, initial_state)
 
         if result.get("error"):
             raise Exception(result["error"])
@@ -158,12 +246,20 @@ async def run_full_enrichment(product_id: int):
         conn.commit()
         conn.close()
 
+        # Publish error event
+        event_bus.publish_product_event(product_id, {
+            "type": "status",
+            "status": "error",
+            "current_step": None,
+        })
 
-async def process_batch(product_ids: List[int]):
-    """Process products sequentially (to respect API rate limits)."""
+
+def process_batch(product_ids: List[int]):
+    """Process products sequentially (to respect API rate limits).
+    Runs in a thread via BackgroundTasks."""
     for pid in product_ids:
-        await run_full_enrichment(pid)
-        await asyncio.sleep(0.5)
+        run_full_enrichment(pid)
+        time.sleep(0.5)
 
 # --- Static sub-paths FIRST (before parameterized {id} routes) ---
 
@@ -171,11 +267,28 @@ async def process_batch(product_ids: List[int]):
 async def process_all_products(background_tasks: BackgroundTasks):
     conn = get_db_connection()
     rows = conn.execute("SELECT id FROM products WHERE status IN ('pending', 'needs_review')").fetchall()
+    product_ids = [row['id'] for row in rows]
+
+    if not product_ids:
+        conn.close()
+        return {"message": "No pending products found"}
+
+    # Set status immediately before background task — fixes race condition
+    for pid in product_ids:
+        conn.execute(
+            "UPDATE products SET status = 'enriching', current_step = 'Queued for processing...', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (pid,)
+        )
+    conn.commit()
     conn.close()
 
-    product_ids = [row['id'] for row in rows]
-    if not product_ids:
-        return {"message": "No pending products found"}
+    # Publish SSE events for all products
+    for pid in product_ids:
+        event_bus.publish_product_event(pid, {
+            "type": "status",
+            "status": "enriching",
+            "current_step": "Queued for processing...",
+        })
 
     background_tasks.add_task(process_batch, product_ids)
     return {"message": f"Started processing {len(product_ids)} products"}
@@ -184,6 +297,25 @@ async def process_all_products(background_tasks: BackgroundTasks):
 async def process_batch_products(request: BatchProcessRequest, background_tasks: BackgroundTasks):
     if not request.product_ids:
         return {"message": "No product IDs provided"}
+
+    # Set status immediately before background task — fixes race condition
+    conn = get_db_connection()
+    for pid in request.product_ids:
+        conn.execute(
+            "UPDATE products SET status = 'enriching', current_step = 'Queued for processing...', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (pid,)
+        )
+    conn.commit()
+    conn.close()
+
+    # Publish SSE events for all products
+    for pid in request.product_ids:
+        event_bus.publish_product_event(pid, {
+            "type": "status",
+            "status": "enriching",
+            "current_step": "Queued for processing...",
+        })
+
     background_tasks.add_task(process_batch, request.product_ids)
     return {"message": f"Started processing {len(request.product_ids)} products"}
 
@@ -202,43 +334,121 @@ def get_product(id: int):
 
 @app.post("/api/products/{id}/enrich")
 async def enrich_product(id: int, background_tasks: BackgroundTasks):
+    # Set status immediately — fixes race condition
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE products SET status = 'enriching', current_step = 'Starting enrichment...', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (id,)
+    )
+    conn.commit()
+    conn.close()
+    event_bus.publish_product_event(id, {
+        "type": "status",
+        "status": "enriching",
+        "current_step": "Starting enrichment...",
+    })
+
     background_tasks.add_task(run_full_enrichment, id)
     return {"message": "Enrichment started"}
 
 @app.post("/api/products/{id}/classify")
 async def trigger_classify(id: int, background_tasks: BackgroundTasks):
     """Run Phase 1 (Triage) only."""
+    # Set status immediately
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE products SET status = 'classifying', current_step = 'Starting classification...', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (id,)
+    )
+    conn.commit()
+    conn.close()
+    event_bus.publish_product_event(id, {
+        "type": "status",
+        "status": "classifying",
+        "current_step": "Starting classification...",
+    })
+
     from pipeline.triage import triage_node
-    async def run():
-        conn = get_db_connection()
-        conn.execute("UPDATE products SET status = 'classifying', current_step = 'Starting classification...', updated_at = CURRENT_TIMESTAMP WHERE id = ?", (id,))
-        conn.commit()
-        conn.close()
-        await triage_node({"product_id": id, "has_brand": False, "has_search_results": False, "error": None})
+    def run():
+        _run_async_in_thread(
+            triage_node,
+            {"product_id": id, "has_brand": False, "has_search_results": False, "error": None}
+        )
     background_tasks.add_task(run)
     return {"message": "Classification started"}
 
 @app.post("/api/products/{id}/search")
 async def trigger_search(id: int, background_tasks: BackgroundTasks):
+    # Set status immediately
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE products SET status = 'searching', current_step = 'Starting search...', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (id,)
+    )
+    conn.commit()
+    conn.close()
+    event_bus.publish_product_event(id, {
+        "type": "status",
+        "status": "searching",
+        "current_step": "Starting search...",
+    })
+
     from pipeline.search import search_node
-    async def run():
-        await search_node({"product_id": id, "has_brand": True, "has_search_results": False, "error": None})
+    def run():
+        _run_async_in_thread(
+            search_node,
+            {"product_id": id, "has_brand": True, "has_search_results": False, "error": None}
+        )
     background_tasks.add_task(run)
     return {"message": "Search started"}
 
 @app.post("/api/products/{id}/extract")
 async def trigger_extract(id: int, background_tasks: BackgroundTasks):
+    # Set status immediately
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE products SET status = 'extracting', current_step = 'Starting extraction...', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (id,)
+    )
+    conn.commit()
+    conn.close()
+    event_bus.publish_product_event(id, {
+        "type": "status",
+        "status": "extracting",
+        "current_step": "Starting extraction...",
+    })
+
     from pipeline.extract import extract_node
-    async def run():
-        await extract_node({"product_id": id, "has_brand": True, "has_search_results": True, "error": None})
+    def run():
+        _run_async_in_thread(
+            extract_node,
+            {"product_id": id, "has_brand": True, "has_search_results": True, "error": None}
+        )
     background_tasks.add_task(run)
     return {"message": "Extraction started"}
 
 @app.post("/api/products/{id}/validate")
 async def trigger_validate(id: int, background_tasks: BackgroundTasks):
+    # Set status immediately
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE products SET status = 'validating', current_step = 'Starting validation...', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (id,)
+    )
+    conn.commit()
+    conn.close()
+    event_bus.publish_product_event(id, {
+        "type": "status",
+        "status": "validating",
+        "current_step": "Starting validation...",
+    })
+
     from pipeline.validate import validate_node
-    async def run():
-        await validate_node({"product_id": id, "has_brand": True, "has_search_results": True, "error": None})
+    def run():
+        _run_async_in_thread(
+            validate_node,
+            {"product_id": id, "has_brand": True, "has_search_results": True, "error": None}
+        )
     background_tasks.add_task(run)
     return {"message": "Validation started"}
 
@@ -260,6 +470,14 @@ async def reset_product(id: int):
     """, (id,))
     conn.commit()
     conn.close()
+
+    # Publish reset event
+    event_bus.publish_product_event(id, {
+        "type": "status",
+        "status": "pending",
+        "current_step": None,
+    })
+
     return {"message": f"Product {id} reset to pending"}
 
 @app.get("/api/products/{id}/export")

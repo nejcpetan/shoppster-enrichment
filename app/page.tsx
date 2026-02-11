@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { UploadCSV } from "@/components/UploadCSV";
 import { ProductTable } from "@/components/ProductTable";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import {
   AlertCircle, Clock, Loader2, AlertTriangle
 } from "lucide-react";
 import { fetchAPI } from "@/lib/api";
+import { useProductsStream } from "@/lib/sse";
 
 interface DashboardStats {
   total: number;
@@ -22,52 +23,47 @@ interface DashboardStats {
 
 export default function Home() {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [processing, setProcessing] = useState(false);
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadStats = async () => {
     try {
       const data = await fetchAPI('/dashboard/stats');
       setStats(data);
-      // Auto-detect if processing
-      if (data.processing > 0) {
-        setProcessing(true);
-      } else if (processing && data.processing === 0) {
-        setProcessing(false);
-      }
     } catch (error) {
       console.error("Failed to load stats", error);
     }
   };
 
-  // Load stats initially
+  // Load stats initially and on refresh trigger
   useEffect(() => {
     loadStats();
   }, [refreshTrigger]);
 
-  // Auto-refresh while processing
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (processing) {
-      interval = setInterval(() => {
-        setRefreshTrigger(prev => prev + 1);
-      }, 3000);
-    }
-    return () => clearInterval(interval);
-  }, [processing]);
+  // SSE: debounced stats refresh on any product status change
+  useProductsStream({
+    onStatusChange: useCallback(() => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => {
+        loadStats();
+      }, 500);
+    }, []),
+  });
+
+  const processing = (stats?.processing ?? 0) > 0;
 
   const handleUploadSuccess = () => {
     setRefreshTrigger(prev => prev + 1);
   };
 
   const handleEnrichAll = async () => {
-    setProcessing(true);
     try {
       await fetchAPI('/products/process-all', { method: 'POST' });
-      setTimeout(() => setRefreshTrigger(prev => prev + 1), 2000);
+      // SSE will push status updates — just refresh stats
+      loadStats();
+      setRefreshTrigger(prev => prev + 1);
     } catch (e) {
       console.error(e);
-      setProcessing(false);
     }
   };
 
