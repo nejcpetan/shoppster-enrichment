@@ -31,6 +31,7 @@ class StandardProduct(BaseModel):
     color: EnrichedField = EnrichedField()
     country_of_origin: EnrichedField = EnrichedField()
     image_url: EnrichedField = EnrichedField()
+    image_urls: List[str] = []  # All discovered product images
 
 class AccessoryProduct(BaseModel):
     diameter: EnrichedField = EnrichedField()
@@ -40,6 +41,7 @@ class AccessoryProduct(BaseModel):
     color: EnrichedField = EnrichedField()
     country_of_origin: EnrichedField = EnrichedField()
     image_url: EnrichedField = EnrichedField()
+    image_urls: List[str] = []  # All discovered product images
 
 class LiquidProduct(BaseModel):
     volume: EnrichedField = EnrichedField()
@@ -50,6 +52,41 @@ class LiquidProduct(BaseModel):
     color: EnrichedField = EnrichedField()
     country_of_origin: EnrichedField = EnrichedField()
     image_url: EnrichedField = EnrichedField()
+    image_urls: List[str] = []  # All discovered product images
+
+# Search Phase Schemas
+
+class SearchResultURL(BaseModel):
+    url: str
+    title: str
+    source_type: Literal["manufacturer", "authorized_distributor", "third_party", "irrelevant"]
+    reasoning: str
+
+class SearchResultList(BaseModel):
+    results: List[SearchResultURL]
+
+# Validation Phase Schemas
+
+class ValidationIssue(BaseModel):
+    field: str
+    issue: str
+    severity: Literal["warning", "error"]
+
+class ValidationReport(BaseModel):
+    overall_quality: Literal["good", "acceptable", "needs_review"]
+    issues: List[ValidationIssue]
+    review_reason: Optional[str] = None
+
+class ValidatedProductData(BaseModel):
+    normalized_data: dict
+    report: ValidationReport
+
+# EAN Lookup
+
+class BarcodeLookupResult(BaseModel):
+    brand: Optional[str] = None
+    product_name: Optional[str] = None
+    category: Optional[str] = None
 
 # API Response Models
 
@@ -58,14 +95,14 @@ class ProductBase(BaseModel):
     product_name: str
     brand: Optional[str] = None
     weight: Optional[str] = None
-    original_data: Optional[str] = None  # JSON string
+    original_data: Optional[str] = None
 
 class ProductResponse(ProductBase):
     id: int
     status: str
     product_type: Optional[str] = None
-    # Stored as JSON strings in DB, but Pydantic can return them as dicts if we parse them manually in the route
-    classification_result: Optional[str] = None 
+    current_step: Optional[str] = None
+    classification_result: Optional[str] = None
     search_result: Optional[str] = None
     extraction_result: Optional[str] = None
     validation_result: Optional[str] = None

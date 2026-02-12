@@ -1,15 +1,16 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { UploadCSV } from "@/components/UploadCSV";
 import { ProductTable } from "@/components/ProductTable";
 import { Button } from "@/components/ui/button";
 import {
-  Search, Filter, Sparkles, Download, Layers,
+  Search, Filter, Download, Layers,
   Zap, MoreHorizontal, RefreshCw, CheckCircle2,
   AlertCircle, Clock, Loader2, AlertTriangle
 } from "lucide-react";
 import { fetchAPI } from "@/lib/api";
+import { useProductsStream } from "@/lib/sse";
 
 interface DashboardStats {
   total: number;
@@ -22,52 +23,47 @@ interface DashboardStats {
 
 export default function Home() {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [processing, setProcessing] = useState(false);
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadStats = async () => {
     try {
       const data = await fetchAPI('/dashboard/stats');
       setStats(data);
-      // Auto-detect if processing
-      if (data.processing > 0) {
-        setProcessing(true);
-      } else if (processing && data.processing === 0) {
-        setProcessing(false);
-      }
     } catch (error) {
       console.error("Failed to load stats", error);
     }
   };
 
-  // Load stats initially
+  // Load stats initially and on refresh trigger
   useEffect(() => {
     loadStats();
   }, [refreshTrigger]);
 
-  // Auto-refresh while processing
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (processing) {
-      interval = setInterval(() => {
-        setRefreshTrigger(prev => prev + 1);
-      }, 3000);
-    }
-    return () => clearInterval(interval);
-  }, [processing]);
+  // SSE: debounced stats refresh on any product status change
+  useProductsStream({
+    onStatusChange: useCallback(() => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => {
+        loadStats();
+      }, 500);
+    }, []),
+  });
+
+  const processing = (stats?.processing ?? 0) > 0;
 
   const handleUploadSuccess = () => {
     setRefreshTrigger(prev => prev + 1);
   };
 
   const handleEnrichAll = async () => {
-    setProcessing(true);
     try {
       await fetchAPI('/products/process-all', { method: 'POST' });
-      setTimeout(() => setRefreshTrigger(prev => prev + 1), 2000);
+      // SSE will push status updates — just refresh stats
+      loadStats();
+      setRefreshTrigger(prev => prev + 1);
     } catch (e) {
       console.error(e);
-      setProcessing(false);
     }
   };
 
@@ -90,10 +86,7 @@ export default function Home() {
       <nav className="border-b border-zinc-800 bg-black/80 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-[1800px] mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-gradient-to-br from-purple-600 to-blue-600 rounded-lg flex items-center justify-center shadow-lg shadow-purple-900/20">
-              <Sparkles className="w-5 h-5 text-white" />
-            </div>
-            <span className="font-bold text-lg tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-zinc-400">
+            <span className="font-bold text-lg tracking-tight text-white">
               Enrichment Engine
             </span>
           </div>
@@ -148,11 +141,11 @@ export default function Home() {
             <Button
               size="lg"
               className={`
-                        relative overflow-hidden transition-all duration-500 shadow-2xl
-                        ${processing
-                  ? 'bg-zinc-800 text-zinc-400 cursor-not-allowed border border-zinc-700'
-                  : 'bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white border-0 shadow-purple-900/20'}
-                    `}
+                relative overflow-hidden transition-all duration-300 shadow-lg font-medium tracking-wide
+                ${processing
+                  ? 'bg-zinc-900 text-zinc-500 cursor-not-allowed border border-zinc-800'
+                  : 'bg-zinc-100 hover:bg-white text-zinc-950 border border-transparent shadow-zinc-500/10'}
+              `}
               onClick={handleEnrichAll}
               disabled={processing}
             >

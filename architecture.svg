@@ -1,0 +1,235 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a0f;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0f1419;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="purple" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#7c3aed" />
+      <stop offset="100%" style="stop-color:#a855f7" />
+    </linearGradient>
+    <linearGradient id="blue" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#2563eb" />
+      <stop offset="100%" style="stop-color:#3b82f6" />
+    </linearGradient>
+    <linearGradient id="orange" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#ea580c" />
+      <stop offset="100%" style="stop-color:#f97316" />
+    </linearGradient>
+    <linearGradient id="green" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#16a34a" />
+      <stop offset="100%" style="stop-color:#22c55e" />
+    </linearGradient>
+    <linearGradient id="teal" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#0891b2" />
+      <stop offset="100%" style="stop-color:#06b6d4" />
+    </linearGradient>
+    <linearGradient id="rose" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#e11d48" />
+      <stop offset="100%" style="stop-color:#f43f5e" />
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="900" fill="url(#bg)"/>
+
+  <!-- Grid pattern -->
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+    <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#ffffff" stroke-width="0.3" opacity="0.03"/>
+  </pattern>
+  <rect width="1200" height="900" fill="url(#grid)"/>
+
+  <!-- Title -->
+  <text x="600" y="45" text-anchor="middle" fill="#e4e4e7" font-size="22" font-weight="700" letter-spacing="2">SHOPPSTER ENRICHMENT — AGENT ARCHITECTURE</text>
+  <text x="600" y="67" text-anchor="middle" fill="#71717a" font-size="12" letter-spacing="1">LANGGRAPH STATE MACHINE · CLAUDE HAIKU 4.5 · GEMINI 2.0 FLASH · TAVILY · FIRECRAWL</text>
+
+  <!-- ========== START NODE ========== -->
+  <circle cx="120" cy="160" r="24" fill="#18181b" stroke="#3f3f46" stroke-width="2" filter="url(#shadow)"/>
+  <text x="120" y="165" text-anchor="middle" fill="#a1a1aa" font-size="11" font-weight="600">START</text>
+
+  <!-- Arrow START → Triage -->
+  <line x1="144" y1="160" x2="192" y2="160" stroke="#3f3f46" stroke-width="2" marker-end="url(#arrowGray)"/>
+  <defs><marker id="arrowGray" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#3f3f46"/></marker></defs>
+
+  <!-- ========== PHASE 1: TRIAGE ========== -->
+  <rect x="198" y="115" width="210" height="90" rx="12" fill="#18181b" stroke="#7c3aed" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="198" y="115" width="210" height="28" rx="12" fill="url(#purple)" opacity="0.15"/>
+  <text x="225" y="134" fill="#a855f7" font-size="10" font-weight="700" letter-spacing="2">🧠 PHASE 1</text>
+  <text x="303" y="157" text-anchor="middle" fill="#e4e4e7" font-size="15" font-weight="700">Triage Agent</text>
+  <text x="303" y="173" text-anchor="middle" fill="#a1a1aa" font-size="9">Classify type · Identify brand</text>
+  <text x="303" y="185" text-anchor="middle" fill="#a1a1aa" font-size="9">Parse model number · Detect color</text>
+  <text x="303" y="197" text-anchor="middle" fill="#7c3aed" font-size="8" font-weight="600">Claude Haiku 4.5</text>
+
+  <!-- Conditional: brand? -->
+  <polygon points="468,160 508,130 548,160 508,190" fill="#18181b" stroke="#f59e0b" stroke-width="2" filter="url(#shadow)"/>
+  <text x="508" y="157" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="600">Brand</text>
+  <text x="508" y="168" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="600">known?</text>
+
+  <!-- Arrow Triage → Diamond -->
+  <line x1="408" y1="160" x2="468" y2="160" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrowPurple)"/>
+  <defs><marker id="arrowPurple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#7c3aed"/></marker></defs>
+
+  <!-- ========== EAN LOOKUP (conditional) ========== -->
+  <rect x="438" y="230" width="140" height="70" rx="10" fill="#18181b" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6,3" filter="url(#shadow)"/>
+  <text x="508" y="255" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700">EAN Lookup</text>
+  <text x="508" y="270" text-anchor="middle" fill="#a1a1aa" font-size="8">barcodelookup.com</text>
+  <text x="508" y="283" text-anchor="middle" fill="#f59e0b" font-size="8" font-weight="600">Firecrawl + Haiku</text>
+
+  <!-- Arrow Diamond → EAN Lookup (No) -->
+  <line x1="508" y1="190" x2="508" y2="230" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrowYellow)"/>
+  <text x="518" y="215" fill="#f59e0b" font-size="9" font-weight="600">No</text>
+  <defs><marker id="arrowYellow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#f59e0b"/></marker></defs>
+
+  <!-- Arrow Diamond → Search (Yes) -->
+  <line x1="548" y1="160" x2="620" y2="160" stroke="#3f3f46" stroke-width="2"/>
+  <text x="578" y="152" fill="#22c55e" font-size="9" font-weight="600">Yes</text>
+
+  <!-- Arrow EAN Lookup → Search -->
+  <path d="M 578,265 L 620,265 L 620,205" fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrowYellow)"/>
+
+  <!-- ========== PHASE 2: SEARCH ========== -->
+  <rect x="620" y="115" width="210" height="90" rx="12" fill="#18181b" stroke="#3b82f6" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="620" y="115" width="210" height="28" rx="12" fill="url(#blue)" opacity="0.15"/>
+  <text x="647" y="134" fill="#3b82f6" font-size="10" font-weight="700" letter-spacing="2">🔍 PHASE 2</text>
+  <text x="725" y="157" text-anchor="middle" fill="#e4e4e7" font-size="15" font-weight="700">Search Agent</text>
+  <text x="725" y="173" text-anchor="middle" fill="#a1a1aa" font-size="9">Find product pages · Classify URLs</text>
+  <text x="725" y="185" text-anchor="middle" fill="#a1a1aa" font-size="9">Score source authority</text>
+  <text x="725" y="197" text-anchor="middle" fill="#3b82f6" font-size="8" font-weight="600">Tavily + Claude Haiku 4.5</text>
+
+  <!-- Arrow Search → Extract -->
+  <line x1="830" y1="160" x2="865" y2="160" stroke="#3b82f6" stroke-width="2"/>
+  <path d="M 865,160 L 865,370 L 200,370" fill="none" stroke="#3f3f46" stroke-width="2" marker-end="url(#arrowGray)"/>
+
+  <!-- ========== PHASE 3: EXTRACT ========== -->
+  <rect x="198" y="330" width="380" height="150" rx="12" fill="#18181b" stroke="#f97316" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="198" y="330" width="380" height="28" rx="12" fill="url(#orange)" opacity="0.15"/>
+  <text x="225" y="349" fill="#f97316" font-size="10" font-weight="700" letter-spacing="2">📄 PHASE 3</text>
+  <text x="388" y="375" text-anchor="middle" fill="#e4e4e7" font-size="15" font-weight="700">Extraction Agent</text>
+  <text x="388" y="392" text-anchor="middle" fill="#a1a1aa" font-size="9">Scrape product pages · LLM data extraction · Collect ALL images</text>
+  <text x="388" y="406" text-anchor="middle" fill="#a1a1aa" font-size="9">Merge multi-source data · Survivorship rules</text>
+  <text x="388" y="420" text-anchor="middle" fill="#a1a1aa" font-size="9">Gap fill: Country of Origin (Tavily) · Color (Gemini Vision)</text>
+  <text x="388" y="438" text-anchor="middle" fill="#f97316" font-size="8" font-weight="600">Firecrawl + Claude Haiku 4.5 + Tavily</text>
+
+  <!-- Sub-agent: Gemini Vision -->
+  <rect x="610" y="370" width="200" height="80" rx="10" fill="#18181b" stroke="#06b6d4" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="610" y="370" width="200" height="24" rx="10" fill="url(#teal)" opacity="0.15"/>
+  <text x="637" y="386" fill="#06b6d4" font-size="9" font-weight="700" letter-spacing="1">👁️ SUB-AGENT</text>
+  <text x="710" y="410" text-anchor="middle" fill="#e4e4e7" font-size="13" font-weight="700">Gemini Vision</text>
+  <text x="710" y="425" text-anchor="middle" fill="#a1a1aa" font-size="9">Detect product color from image</text>
+  <text x="710" y="439" text-anchor="middle" fill="#06b6d4" font-size="8" font-weight="600">Gemini 2.0 Flash (Vertex AI)</text>
+
+  <!-- Arrow Extract → Gemini (conditional) -->
+  <line x1="578" y1="405" x2="610" y2="405" stroke="#06b6d4" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrowTeal)"/>
+  <text x="588" y="398" fill="#06b6d4" font-size="8">no color?</text>
+  <defs><marker id="arrowTeal" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#06b6d4"/></marker></defs>
+
+  <!-- Arrow Extract → Validate -->
+  <path d="M 388,480 L 388,530" fill="none" stroke="#f97316" stroke-width="2" marker-end="url(#arrowOrange)"/>
+  <defs><marker id="arrowOrange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#f97316"/></marker></defs>
+
+  <!-- ========== PHASE 4: VALIDATE ========== -->
+  <rect x="248" y="535" width="280" height="90" rx="12" fill="#18181b" stroke="#22c55e" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="248" y="535" width="280" height="28" rx="12" fill="url(#green)" opacity="0.15"/>
+  <text x="275" y="554" fill="#22c55e" font-size="10" font-weight="700" letter-spacing="2">✅ PHASE 4</text>
+  <text x="388" y="577" text-anchor="middle" fill="#e4e4e7" font-size="15" font-weight="700">Validation Agent</text>
+  <text x="388" y="593" text-anchor="middle" fill="#a1a1aa" font-size="9">Normalize units (cm/kg/L) · Sanity check</text>
+  <text x="388" y="607" text-anchor="middle" fill="#a1a1aa" font-size="9">Quality score · Issue flagging</text>
+  <text x="388" y="619" text-anchor="middle" fill="#22c55e" font-size="8" font-weight="600">Claude Haiku 4.5 + Normalization Engine</text>
+
+  <!-- ========== END NODE ========== -->
+  <circle cx="388" cy="680" r="24" fill="#18181b" stroke="#22c55e" stroke-width="3" filter="url(#shadow)"/>
+  <circle cx="388" cy="680" r="18" fill="#18181b" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="388" y="685" text-anchor="middle" fill="#22c55e" font-size="11" font-weight="600">END</text>
+
+  <!-- Arrow Validate → End -->
+  <line x1="388" y1="625" x2="388" y2="656" stroke="#22c55e" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <defs><marker id="arrowGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#22c55e"/></marker></defs>
+
+  <!-- ========== TOOLS LEGEND (bottom right) ========== -->
+  <rect x="820" y="505" width="340" height="270" rx="12" fill="#18181b" stroke="#27272a" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="845" y="530" fill="#e4e4e7" font-size="13" font-weight="700" letter-spacing="1">TOOLS &amp; MODELS</text>
+
+  <!-- Tool entries -->
+  <rect x="840" y="545" width="8" height="8" rx="2" fill="#a855f7"/>
+  <text x="858" y="553" fill="#e4e4e7" font-size="11" font-weight="600">Claude Haiku 4.5</text>
+  <text x="858" y="565" fill="#71717a" font-size="9">LLM reasoning, classification, extraction</text>
+
+  <rect x="840" y="580" width="8" height="8" rx="2" fill="#06b6d4"/>
+  <text x="858" y="588" fill="#e4e4e7" font-size="11" font-weight="600">Gemini 2.0 Flash</text>
+  <text x="858" y="600" fill="#71717a" font-size="9">Vision — product color from images</text>
+
+  <rect x="840" y="615" width="8" height="8" rx="2" fill="#3b82f6"/>
+  <text x="858" y="623" fill="#e4e4e7" font-size="11" font-weight="600">Tavily API</text>
+  <text x="858" y="635" fill="#71717a" font-size="9">Web search — find product pages, COO</text>
+
+  <rect x="840" y="650" width="8" height="8" rx="2" fill="#f97316"/>
+  <text x="858" y="658" fill="#e4e4e7" font-size="11" font-weight="600">Firecrawl API</text>
+  <text x="858" y="670" fill="#71717a" font-size="9">Web scraping — page content + images</text>
+
+  <rect x="840" y="685" width="8" height="8" rx="2" fill="#22c55e"/>
+  <text x="858" y="693" fill="#e4e4e7" font-size="11" font-weight="600">Normalization Engine</text>
+  <text x="858" y="705" fill="#71717a" font-size="9">Unit conversion — cm/kg/L standardization</text>
+
+  <rect x="840" y="720" width="8" height="8" rx="2" fill="#ef4444"/>
+  <text x="858" y="728" fill="#e4e4e7" font-size="11" font-weight="600">LangGraph</text>
+  <text x="858" y="740" fill="#71717a" font-size="9">State machine orchestration, routing, retries</text>
+
+  <!-- ========== DATA FLOW (bottom left) ========== -->
+  <rect x="40" y="505" width="340" height="190" rx="12" fill="#18181b" stroke="#27272a" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="65" y="530" fill="#e4e4e7" font-size="13" font-weight="700" letter-spacing="1">DATA FLOW</text>
+
+  <text x="65" y="555" fill="#a855f7" font-size="10" font-weight="600">1. Triage</text>
+  <text x="130" y="555" fill="#a1a1aa" font-size="10">→ product_type, brand, model_number</text>
+
+  <text x="65" y="580" fill="#f59e0b" font-size="10" font-weight="600">1b. EAN</text>
+  <text x="130" y="580" fill="#a1a1aa" font-size="10">→ brand (from barcode DB, if unknown)</text>
+
+  <text x="65" y="605" fill="#3b82f6" font-size="10" font-weight="600">2. Search</text>
+  <text x="130" y="605" fill="#a1a1aa" font-size="10">→ classified URLs [mfr, dist, 3rd party]</text>
+
+  <text x="65" y="630" fill="#f97316" font-size="10" font-weight="600">3. Extract</text>
+  <text x="130" y="630" fill="#a1a1aa" font-size="10">→ dimensions, weight, color, images[]</text>
+
+  <text x="65" y="655" fill="#06b6d4" font-size="10" font-weight="600">3b. Vision</text>
+  <text x="130" y="655" fill="#a1a1aa" font-size="10">→ color (from product image, if needed)</text>
+
+  <text x="65" y="680" fill="#22c55e" font-size="10" font-weight="600">4. Validate</text>
+  <text x="130" y="680" fill="#a1a1aa" font-size="10">→ normalized data, quality score, issues</text>
+
+  <!-- ========== UI LAYER ========== -->
+  <rect x="820" y="115" width="340" height="130" rx="12" fill="#18181b" stroke="#27272a" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="845" y="140" fill="#e4e4e7" font-size="13" font-weight="700" letter-spacing="1">FRONTEND (Next.js)</text>
+  <text x="845" y="162" fill="#a1a1aa" font-size="10">📊 Dashboard — product table + progress dots</text>
+  <text x="845" y="180" fill="#a1a1aa" font-size="10">📋 Product Detail — live agent progress banner</text>
+  <text x="845" y="198" fill="#a1a1aa" font-size="10">🖼️ Image Gallery — all discovered images</text>
+  <text x="845" y="216" fill="#a1a1aa" font-size="10">⏱️ Real-time polling (2s) — current_step updates</text>
+  <text x="845" y="234" fill="#3b82f6" font-size="8" font-weight="600">REST API → FastAPI (localhost:8000)</text>
+
+  <!-- Storage block -->
+  <rect x="820" y="280" width="340" height="80" rx="12" fill="#18181b" stroke="#27272a" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="845" y="305" fill="#e4e4e7" font-size="13" font-weight="700" letter-spacing="1">STORAGE (SQLite)</text>
+  <text x="845" y="325" fill="#a1a1aa" font-size="10">💾 products.db — status, results JSON,</text>
+  <text x="845" y="343" fill="#a1a1aa" font-size="10">   current_step, enrichment_log, image_urls</text>
+
+  <!-- Footer -->
+  <text x="600" y="830" text-anchor="middle" fill="#3f3f46" font-size="10" letter-spacing="1">© 2026 WebFast · Shoppster Product Enrichment Engine · v1.0</text>
+
+  <!-- Connection: Frontend → DB -->
+  <line x1="990" y1="245" x2="990" y2="280" stroke="#27272a" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+
+  <!-- Error path annotation -->
+  <rect x="820" y="400" width="340" height="80" rx="12" fill="#18181b" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="6,3" filter="url(#shadow)"/>
+  <text x="845" y="425" fill="#ef4444" font-size="12" font-weight="700" letter-spacing="1">ERROR HANDLING</text>
+  <text x="845" y="445" fill="#a1a1aa" font-size="10">⚡ Any node error → short-circuit remaining</text>
+  <text x="845" y="463" fill="#a1a1aa" font-size="10">📝 Status → 'error' · Logged with full traceback</text>
+</svg>
