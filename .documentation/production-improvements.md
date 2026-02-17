@@ -2112,13 +2112,13 @@ Use this to track progress:
 - [ ] **Phase 1.3** — API call timeouts on all external calls
 - [ ] **Phase 1.4** — Robust LLM JSON parsing
 - [ ] **Phase 1.5** — Input validation on CSV upload
-- [ ] **Phase 1.6** — Cost guardrails (daily limits, batch limits)
+- [x] **Phase 1.6** — Cost guardrails (daily limits, batch limits)
 - [ ] **Phase 1.7** — Database connection safety (context manager)
 - [ ] **Phase 2.1** — Environment-based configuration
 - [ ] **Phase 2.2** — Structured logging (replace all `print()`)
 - [ ] **Phase 2.3** — Concurrent processing with semaphore
 - [ ] **Phase 2.4** — API key authentication
-- [ ] **Phase 3.1** — Smarter image filtering
+- [x] **Phase 3.1** — Smarter image filtering
 - [ ] **Phase 3.2** — Idempotency guard
 - [ ] **Phase 3.3** — Enhanced extraction prompts
 - [ ] **Phase 3.4** — Separate enrichment logs table
@@ -2126,7 +2126,7 @@ Use this to track progress:
 - [ ] **Phase 4.2** — Bulk operations & filtering & pagination
 - [ ] **Phase 4.3** — Enrichment progress detail
 - [ ] **Phase 4.4** — Image gallery / proxy fixes
-- [ ] **Phase 4.5** — Dashboard enhancements
+- [x] **Phase 4.5** — Dashboard enhancements
 - [ ] **Phase 5.1** — Integration tests
 - [ ] **Phase 5.2** — PostgreSQL migration path (when ready)
 - [ ] **Phase 6.1** — Firecrawl extract mode

@@ -1,18 +1,19 @@
 """
-LangGraph Enrichment Pipeline
+LangGraph Enrichment Pipeline — v2
 
-State machine: triage → [ean_lookup?] → search → extract → validate
+State machine: triage → [ean_lookup?] → search → extract → validate → save_costs
 
-Each node reads/writes to the SQLite DB directly and updates `current_step` 
-for real-time UI feedback. State only carries flow-control data.
+Each node reads/writes to the SQLite DB directly and updates `current_step`
+for real-time UI feedback. State carries flow-control data + cost tracker.
 """
 
 import json
 import logging
-from typing import TypedDict, Optional, Literal
+from typing import TypedDict, Optional, Literal, Any
 from langgraph.graph import StateGraph, START, END
-from db import get_db_connection, update_step, append_log
+from db import get_db_connection, update_step, append_log, save_cost_data
 from datetime import datetime
+from utils.cost_tracker import CostTracker
 
 logger = logging.getLogger("pipeline.graph")
 
@@ -24,6 +25,7 @@ class ProductState(TypedDict):
     has_brand: bool
     has_search_results: bool
     error: Optional[str]
+    cost_tracker: Any  # CostTracker instance, passed through all nodes
 
 
 # --- Node Imports (lazy to avoid circular imports at module level) ---
@@ -39,6 +41,8 @@ async def _ean_lookup(state: ProductState) -> dict:
     Scrapes barcodelookup.com to identify product brand.
     """
     product_id = state["product_id"]
+    cost_tracker: CostTracker = state.get("cost_tracker")
+
     logger.info(f"[Product {product_id}]   EAN Lookup — brand not found, trying barcode DB...")
     update_step(product_id, "classifying", "Looking up EAN for brand identification...")
 
@@ -54,6 +58,11 @@ async def _ean_lookup(state: ProductState) -> dict:
 
     ean = product['ean']
     result = await lookup_ean(ean)
+
+    # Track costs: 1 Firecrawl scrape + 1 Claude Haiku call
+    if cost_tracker:
+        cost_tracker.add_api_call("firecrawl", credits=1, phase="ean_lookup")
+        cost_tracker.add_llm_call("claude_haiku", input_tokens=500, output_tokens=200, phase="ean_lookup")
 
     if result and result.get('brand'):
         # Update classification with discovered brand
@@ -108,6 +117,29 @@ async def _validate(state: ProductState) -> dict:
     return await validate_node(state)
 
 
+async def _save_costs(state: ProductState) -> dict:
+    """Final node: persist cost tracking data to DB."""
+    product_id = state["product_id"]
+    cost_tracker: CostTracker = state.get("cost_tracker")
+
+    if cost_tracker:
+        summary = cost_tracker.get_summary()
+        save_cost_data(product_id, summary)
+        logger.info(
+            f"[Product {product_id}] 💰 Total cost: ${cost_tracker.total_cost:.4f} "
+            f"({len(cost_tracker.llm_calls)} LLM calls, {len(cost_tracker.api_calls)} API calls)"
+        )
+        append_log(product_id, {
+            "timestamp": datetime.now().isoformat(),
+            "phase": "pipeline", "step": "cost_summary", "status": "success",
+            "details": f"Total cost: ${cost_tracker.total_cost:.4f} | "
+                       f"Tokens: {cost_tracker.total_input_tokens}→{cost_tracker.total_output_tokens} | "
+                       f"API credits: {cost_tracker.total_api_credits}",
+            "cost_usd": round(cost_tracker.total_cost, 4)
+        })
+    return {}
+
+
 # --- Routing ---
 
 def route_after_triage(state: ProductState) -> Literal["ean_lookup", "search"]:
@@ -130,13 +162,15 @@ def build_pipeline() -> StateGraph:
     builder.add_node("search", _search)
     builder.add_node("extract", _extract)
     builder.add_node("validate", _validate)
+    builder.add_node("save_costs", _save_costs)
 
     builder.add_edge(START, "triage")
     builder.add_conditional_edges("triage", route_after_triage)
     builder.add_edge("ean_lookup", "search")
     builder.add_edge("search", "extract")
     builder.add_edge("extract", "validate")
-    builder.add_edge("validate", END)
+    builder.add_edge("validate", "save_costs")
+    builder.add_edge("save_costs", END)
 
     return builder.compile()
 

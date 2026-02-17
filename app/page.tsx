@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import Link from "next/link";
 import { UploadCSV } from "@/components/UploadCSV";
 import { ProductTable } from "@/components/ProductTable";
 import { Button } from "@/components/ui/button";
 import {
   Search, Filter, Download, Layers,
   Zap, MoreHorizontal, RefreshCw, CheckCircle2,
-  AlertCircle, Clock, Loader2, AlertTriangle
+  AlertCircle, Clock, Loader2, AlertTriangle, Activity
 } from "lucide-react";
 import { fetchAPI } from "@/lib/api";
 
@@ -82,9 +83,9 @@ export default function Home() {
   ];
 
   return (
-    <div className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-purple-500/30">
+    <div className="h-screen bg-black text-zinc-100 font-sans selection:bg-purple-500/30 flex flex-col overflow-hidden">
       {/* Top Navigation Bar */}
-      <nav className="border-b border-zinc-800 bg-black/80 backdrop-blur-md sticky top-0 z-50">
+      <nav className="border-b border-zinc-800 bg-black/80 backdrop-blur-md sticky top-0 z-50 shrink-0">
         <div className="max-w-[1800px] mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="font-bold text-lg tracking-tight text-white">
@@ -102,6 +103,16 @@ export default function Home() {
               <Download className="w-4 h-4 mr-2" />
               Export Data
             </Button>
+            <Link href="/analytics">
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-zinc-800 bg-zinc-900/50 hover:bg-zinc-800 text-zinc-400 hover:text-white transition-all"
+              >
+                <Activity className="w-4 h-4 mr-2" />
+                Analytics
+              </Button>
+            </Link>
             <div className="h-6 w-px bg-zinc-800 mx-2"></div>
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center border border-zinc-700">
@@ -113,10 +124,10 @@ export default function Home() {
       </nav>
 
       {/* Main Content */}
-      <main className="w-full px-6 py-8 space-y-6 max-w-[1800px] mx-auto">
+      <main className="w-full px-6 py-8 space-y-6 max-w-[1800px] mx-auto flex-1 flex flex-col min-h-0 overflow-hidden">
         {/* Stats Cards */}
         {stats && (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 shrink-0">
             {statCards.map((card) => (
               <div key={card.label} className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 flex flex-col gap-1">
                 <div className="flex items-center gap-2 text-zinc-500 text-xs uppercase tracking-wider">
@@ -132,7 +143,7 @@ export default function Home() {
         )}
 
         {/* Header Section with Upload and Search */}
-        <div className="flex flex-col md:flex-row gap-6 items-start justify-between">
+        <div className="flex flex-col md:flex-row gap-6 items-start justify-between shrink-0">
           <div className="w-full max-w-xl space-y-4">
             <UploadCSV onUploadSuccess={handleUploadSuccess} />
           </div>
@@ -166,7 +177,7 @@ export default function Home() {
         </div>
 
         {/* Full Width Table Section */}
-        <section className="space-y-4 h-[calc(100vh-400px)] min-h-[500px]">
+        <section className="space-y-4 flex-1 flex flex-col min-h-0 overflow-hidden">
           <ProductTable refreshTrigger={refreshTrigger} onStatusChange={handleStatusChange} />
         </section>
       </main>

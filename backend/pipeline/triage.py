@@ -20,6 +20,7 @@ async def triage_node(state: dict) -> dict:
     Parses product name, classifies type, identifies brand.
     """
     product_id = state["product_id"]
+    cost_tracker = state.get("cost_tracker")
 
     logger.info(f"[Product {product_id}] ▶ TRIAGE — Starting classification")
     update_step(product_id, "classifying", "Parsing product name...")
@@ -64,12 +65,20 @@ Existing Weight: {product.get('weight', 'None')}"""
     update_step(product_id, "classifying", "Running classification model...")
 
     try:
-        classification = classify_with_schema(
+        classification, usage = classify_with_schema(
             prompt=user_prompt,
             system=system_prompt,
             schema=ProductClassification,
-            model="haiku"
+            model="haiku",
+            return_usage=True
         )
+
+        # Track cost
+        if cost_tracker:
+            cost_tracker.add_llm_call(
+                usage["model"], usage["input_tokens"], usage["output_tokens"],
+                phase="triage"
+            )
 
         # Save to DB
         conn = get_db_connection()
@@ -87,7 +96,7 @@ Existing Weight: {product.get('weight', 'None')}"""
             "timestamp": datetime.now().isoformat(),
             "phase": "triage", "step": "classify", "status": "success",
             "details": f"Type: {classification.product_type}, Brand: {classification.brand} ({classification.brand_confidence})",
-            "credits_used": {"claude_tokens": 400}
+            "credits_used": {"claude_in": usage["input_tokens"], "claude_out": usage["output_tokens"]}
         })
 
         has_brand = (

@@ -19,7 +19,8 @@ import {
     ArrowLeft, Search, ExternalLink, Download, CheckCircle2, AlertTriangle,
     Play, Loader2, Box, Database, Ruler, Scale, Palette, Globe2, Check,
     RotateCcw, Clock, Zap, XCircle, ChevronDown, ChevronUp, Maximize2,
-    Brain, FileText, ShieldCheck, Image as ImageIcon
+    Brain, FileText, ShieldCheck, Image as ImageIcon, Package, Shield,
+    FileDown, List, Wrench, Info, BookOpen
 } from "lucide-react";
 import {
     Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -58,6 +59,21 @@ function getPhaseIndex(status: string): number {
     return idx;
 }
 
+// Confidence badge component
+function ConfidenceBadge({ confidence }: { confidence?: string }) {
+    if (!confidence || confidence === 'not_found') return null;
+    const styles: Record<string, string> = {
+        official: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+        third_party: "bg-blue-500/10 text-blue-400 border-blue-500/20",
+        inferred: "bg-orange-500/10 text-orange-400 border-orange-500/20",
+    };
+    return (
+        <Badge className={`${styles[confidence] || 'bg-zinc-800 text-zinc-400'} text-[10px] uppercase`}>
+            {confidence?.replace('_', ' ')}
+        </Badge>
+    );
+}
+
 export function ProductDetail({ productId }: ProductDetailProps) {
     const [product, setProduct] = useState<any>(null);
     const [loading, setLoading] = useState(true);
@@ -65,6 +81,8 @@ export function ProductDetail({ productId }: ProductDetailProps) {
     const [logExpanded, setLogExpanded] = useState(false);
     const [imageModalOpen, setImageModalOpen] = useState(false);
     const [selectedImage, setSelectedImage] = useState<string | null>(null);
+    const [techSpecsExpanded, setTechSpecsExpanded] = useState(false);
+    const [featuresExpanded, setFeaturesExpanded] = useState(false);
 
     useEffect(() => {
         loadProduct();
@@ -183,6 +201,7 @@ export function ProductDetail({ productId }: ProductDetailProps) {
     const extraction = product.extraction_result ? JSON.parse(product.extraction_result) : null;
     const validation = product.validation_result ? JSON.parse(product.validation_result) : null;
     const enrichmentLog = product.enrichment_log ? JSON.parse(product.enrichment_log) : [];
+    const costData = product.cost_data ? JSON.parse(product.cost_data) : null;
 
     const displayData = validation ? validation.normalized_data : extraction;
 
@@ -197,26 +216,28 @@ export function ProductDetail({ productId }: ProductDetailProps) {
         allImages.unshift(displayData.image_url.value);
     }
 
-    // Helper to render extraction rows
-    const renderExtractionRow = (label: string, field: any, icon: React.ReactNode) => {
-        if (!field || field.value === null) return null;
+    // Extract new data segments
+    const dimensions = displayData?.dimensions;
+    const descriptions = displayData?.descriptions;
+    const techData = displayData?.technical_data;
+    const warranty = displayData?.warranty;
+    const documents = displayData?.documents;
+
+    // Helper to render a dimension row
+    const renderDimRow = (label: string, field: any, icon: React.ReactNode) => {
+        if (!field || field.value === null || field.value === undefined) return null;
         return (
             <TableRow className="border-zinc-800/50 hover:bg-zinc-800/30">
-                <TableCell className="font-medium text-zinc-400 flex items-center gap-2">
+                <TableCell className="font-medium text-zinc-400 flex items-center gap-2 py-2">
                     {icon} {label}
                 </TableCell>
-                <TableCell className="font-mono text-zinc-200">
+                <TableCell className="font-mono text-zinc-200 py-2">
                     {field.value} {field.unit}
                 </TableCell>
-                <TableCell>
-                    {field.confidence === 'official' && <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 text-[10px] uppercase">Official</Badge>}
-                    {field.confidence === 'third_party' && <Badge className="bg-blue-500/10 text-blue-400 border-blue-500/20 text-[10px] uppercase">Third Party</Badge>}
-                    {field.confidence === 'inferred' && <Badge className="bg-orange-500/10 text-orange-400 border-orange-500/20 text-[10px] uppercase">Inferred</Badge>}
-                    {field.dimension_type && field.dimension_type !== 'na' && (
-                        <Badge className="ml-1 bg-zinc-800 text-zinc-400 border-zinc-700 text-[9px] uppercase">{field.dimension_type}</Badge>
-                    )}
+                <TableCell className="py-2">
+                    <ConfidenceBadge confidence={field.confidence} />
                 </TableCell>
-                <TableCell className="text-right">
+                <TableCell className="text-right py-2">
                     {field.source_url && (
                         <a href={field.source_url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">
                             <ExternalLink className="w-3 h-3 ml-auto" />
@@ -224,6 +245,14 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                     )}
                 </TableCell>
             </TableRow>
+        );
+    };
+
+    // Check if a dimension set has any data
+    const hasDimData = (dimSet: any) => {
+        if (!dimSet) return false;
+        return ['height', 'length', 'width', 'depth', 'weight', 'diameter', 'volume'].some(
+            f => dimSet[f] && dimSet[f].value !== null && dimSet[f].value !== undefined
         );
     };
 
@@ -260,6 +289,11 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                     <div className="flex items-center gap-2 mt-2 text-zinc-500 font-mono text-sm">
                         <span className="bg-zinc-900 px-2 py-1 rounded border border-zinc-800">ID: {product.id}</span>
                         <span className="bg-zinc-900 px-2 py-1 rounded border border-zinc-800">EAN: {product.ean}</span>
+                        {costData?.total_cost_usd !== undefined && (
+                            <span className="bg-zinc-900 px-2 py-1 rounded border border-zinc-800 font-mono text-zinc-400">
+                                ${Number(costData.total_cost_usd).toFixed(4)}
+                            </span>
+                        )}
                         <Badge className={`${currentStatus.color} px-2 py-0.5`}>
                             {isProcessing && <Loader2 className="w-3 h-3 mr-1 animate-spin" />}
                             {currentStatus.label}
@@ -293,8 +327,7 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                             relative overflow-hidden transition-all duration-300 shadow-lg font-medium tracking-wide
                             ${isProcessing
                                 ? 'bg-zinc-900 text-zinc-500 cursor-not-allowed border border-zinc-800'
-                                : 'bg-zinc-100 hover:bg-white text-zinc-950 border border-transparent shadow-zinc-500/10'}
-                        `}
+                                : 'bg-zinc-100 hover:bg-white text-zinc-950 border border-transparent shadow-zinc-500/10'}`}
                         onClick={runFullEnrichment}
                         disabled={isProcessing}
                     >
@@ -458,6 +491,66 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                         )}
                     </Card>
 
+
+                    {/* ═══ Cost Summary Card ═══ */}
+                    {costData && (
+                        <Card className="border-zinc-800 bg-zinc-900/50 backdrop-blur-sm">
+                            <CardHeader className="border-b border-zinc-800/50 pb-2">
+                                <CardTitle className="text-sm uppercase tracking-widest text-zinc-400 flex items-center gap-2">
+                                    <Zap className="w-4 h-4 text-yellow-400" /> Cost Summary
+                                    <Badge className="bg-yellow-500/10 text-yellow-400 border-yellow-500/20 text-[10px] font-mono ml-auto">
+                                        ${costData.total_cost_usd?.toFixed(4)}
+                                    </Badge>
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent className="pt-3 space-y-3">
+                                {/* Token Usage */}
+                                <div className="grid grid-cols-2 gap-2">
+                                    <div className="bg-zinc-800/50 rounded-lg p-2 text-center">
+                                        <div className="text-[10px] uppercase text-zinc-500 font-bold">Input Tokens</div>
+                                        <div className="text-sm font-mono text-zinc-200">{costData.total_input_tokens?.toLocaleString()}</div>
+                                    </div>
+                                    <div className="bg-zinc-800/50 rounded-lg p-2 text-center">
+                                        <div className="text-[10px] uppercase text-zinc-500 font-bold">Output Tokens</div>
+                                        <div className="text-sm font-mono text-zinc-200">{costData.total_output_tokens?.toLocaleString()}</div>
+                                    </div>
+                                </div>
+                                {/* Cost by Service */}
+                                {costData.cost_by_service && Object.keys(costData.cost_by_service).length > 0 && (
+                                    <div>
+                                        <div className="text-[10px] uppercase text-zinc-500 font-bold mb-1">By Service</div>
+                                        <div className="space-y-1">
+                                            {Object.entries(costData.cost_by_service).map(([svc, cost]: [string, any]) => (
+                                                <div key={svc} className="flex items-center justify-between text-xs">
+                                                    <span className="text-zinc-400">{svc.replace('_', ' ')}</span>
+                                                    <span className="font-mono text-zinc-300">${Number(cost).toFixed(4)}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                {/* Cost by Phase */}
+                                {costData.cost_by_phase && Object.keys(costData.cost_by_phase).length > 0 && (
+                                    <div>
+                                        <div className="text-[10px] uppercase text-zinc-500 font-bold mb-1">By Phase</div>
+                                        <div className="space-y-1">
+                                            {Object.entries(costData.cost_by_phase).map(([phase, cost]: [string, any]) => (
+                                                <div key={phase} className="flex items-center justify-between text-xs">
+                                                    <span className={`text-zinc-400 ${phaseColors[phase] || ''}`}>{phase.replace('_', ' ')}</span>
+                                                    <span className="font-mono text-zinc-300">${Number(cost).toFixed(4)}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                {/* Call Counts */}
+                                <div className="flex items-center justify-between text-[10px] text-zinc-600 pt-1 border-t border-zinc-800/50">
+                                    <span>{costData.llm_calls_count} LLM calls · {costData.api_calls_count} API calls</span>
+                                </div>
+                            </CardContent>
+                        </Card>
+                    )}
+
                     {/* Enrichment Log Timeline */}
                     {enrichmentLog.length > 0 && (
                         <Card className="border-zinc-800 bg-zinc-900/30 backdrop-blur-sm">
@@ -507,36 +600,163 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                     )}
                 </div>
 
-                {/* Right Column: Golden Record + Images */}
+                {/* Right Column: Golden Record + New Segments */}
                 <div className="space-y-6">
+
+                    {/* ═══ Descriptions Card ═══ */}
+                    {descriptions && (descriptions.short_description?.value || descriptions.marketing_description?.value || (descriptions.features && descriptions.features.length > 0)) && (
+                        <Card className="border-zinc-800 bg-zinc-900/50 backdrop-blur-sm">
+                            <CardHeader className="border-b border-zinc-800/50">
+                                <CardTitle className="text-sm uppercase tracking-widest text-zinc-400 flex items-center gap-2">
+                                    <Info className="w-4 h-4 text-cyan-400" /> Descriptions
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent className="pt-4 space-y-4">
+                                {/* Short Description */}
+                                {descriptions.short_description?.value && (
+                                    <div>
+                                        <div className="text-[10px] uppercase font-bold text-zinc-500 mb-1 flex items-center gap-1">
+                                            Short Description
+                                            <ConfidenceBadge confidence={descriptions.short_description.confidence} />
+                                        </div>
+                                        <p className="text-sm text-zinc-200 leading-relaxed">
+                                            {String(descriptions.short_description.value)}
+                                        </p>
+                                    </div>
+                                )}
+
+                                {/* Marketing Description */}
+                                {descriptions.marketing_description?.value && (
+                                    <div>
+                                        <div className="text-[10px] uppercase font-bold text-zinc-500 mb-1 flex items-center gap-1">
+                                            Marketing Description
+                                            <ConfidenceBadge confidence={descriptions.marketing_description.confidence} />
+                                        </div>
+                                        <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-wrap max-h-40 overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-zinc-900">
+                                            {String(descriptions.marketing_description.value)}
+                                        </p>
+                                    </div>
+                                )}
+
+                                {/* Features */}
+                                {descriptions.features && descriptions.features.length > 0 && (
+                                    <div>
+                                        <div
+                                            className="text-[10px] uppercase font-bold text-zinc-500 mb-1 flex items-center gap-1 cursor-pointer"
+                                            onClick={() => setFeaturesExpanded(!featuresExpanded)}
+                                        >
+                                            <List className="w-3 h-3" /> Features
+                                            <Badge className="bg-zinc-800 text-zinc-400 border-zinc-700 text-[10px]">{descriptions.features.length}</Badge>
+                                            {featuresExpanded ? <ChevronUp className="w-3 h-3 ml-auto" /> : <ChevronDown className="w-3 h-3 ml-auto" />}
+                                        </div>
+                                        {(featuresExpanded || descriptions.features.length <= 5) && (
+                                            <ul className="space-y-1">
+                                                {descriptions.features.map((feat: string, i: number) => (
+                                                    <li key={i} className="text-xs text-zinc-300 flex items-start gap-2">
+                                                        <CheckCircle2 className="w-3 h-3 text-emerald-500 mt-0.5 shrink-0" />
+                                                        {feat}
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        )}
+                                        {!featuresExpanded && descriptions.features.length > 5 && (
+                                            <ul className="space-y-1">
+                                                {descriptions.features.slice(0, 5).map((feat: string, i: number) => (
+                                                    <li key={i} className="text-xs text-zinc-300 flex items-start gap-2">
+                                                        <CheckCircle2 className="w-3 h-3 text-emerald-500 mt-0.5 shrink-0" />
+                                                        {feat}
+                                                    </li>
+                                                ))}
+                                                <li className="text-xs text-zinc-600">+{descriptions.features.length - 5} more...</li>
+                                            </ul>
+                                        )}
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+                    )}
+
+                    {/* ═══ Dimensions Card — Net vs Packaged ═══ */}
                     <Card className={`border-zinc-800 bg-zinc-900/50 backdrop-blur-sm h-fit ${!displayData ? 'opacity-50' : ''}`}>
                         <CardHeader className="border-b border-zinc-800/50">
-                            <CardTitle className="text-lg text-zinc-200">Golden Record</CardTitle>
-                            <CardDescription>Final Enriched Data</CardDescription>
+                            <CardTitle className="text-lg text-zinc-200 flex items-center gap-2">
+                                <Ruler className="w-5 h-5 text-blue-400" /> Dimensions & Physical Data
+                            </CardTitle>
+                            <CardDescription>Net (product) vs Packaged (logistics)</CardDescription>
                         </CardHeader>
                         <CardContent className="p-0">
-                            {displayData ? (
-                                <Table>
-                                    <TableHeader className="bg-zinc-950/50">
-                                        <TableRow className="border-zinc-800 hover:bg-transparent">
-                                            <TableHead className="text-[10px] uppercase font-bold text-zinc-500 pl-6">Field</TableHead>
-                                            <TableHead className="text-[10px] uppercase font-bold text-zinc-500">Value</TableHead>
-                                            <TableHead className="text-[10px] uppercase font-bold text-zinc-500">Type</TableHead>
-                                            <TableHead className="text-[10px] uppercase font-bold text-zinc-500 text-right pr-6">Src</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {renderExtractionRow("Height", displayData.height, <Ruler className="w-3 h-3" />)}
-                                        {renderExtractionRow("Length", displayData.length, <Ruler className="w-3 h-3" />)}
-                                        {renderExtractionRow("Width", displayData.width, <Ruler className="w-3 h-3" />)}
-                                        {renderExtractionRow("Weight", displayData.weight, <Scale className="w-3 h-3" />)}
-                                        {renderExtractionRow("Volume", displayData.volume, <Database className="w-3 h-3" />)}
-                                        {renderExtractionRow("Diameter", displayData.diameter, <Ruler className="w-3 h-3" />)}
-                                        {renderExtractionRow("Thickness", displayData.thickness, <Ruler className="w-3 h-3" />)}
-                                        {renderExtractionRow("Color", displayData.color, <Palette className="w-3 h-3" />)}
-                                        {renderExtractionRow("Origin", displayData.country_of_origin, <Globe2 className="w-3 h-3" />)}
-                                    </TableBody>
-                                </Table>
+                            {displayData && dimensions ? (
+                                <div>
+                                    {/* Net Dimensions */}
+                                    {hasDimData(dimensions.net) && (
+                                        <div>
+                                            <div className="px-4 py-2 bg-emerald-500/5 border-b border-zinc-800/50">
+                                                <span className="text-[10px] uppercase font-bold tracking-widest text-emerald-400 flex items-center gap-1">
+                                                    <Box className="w-3 h-3" /> Net (Product)
+                                                </span>
+                                            </div>
+                                            <Table>
+                                                <TableHeader className="bg-zinc-950/30">
+                                                    <TableRow className="border-zinc-800 hover:bg-transparent">
+                                                        <TableHead className="text-[10px] uppercase font-bold text-zinc-500 pl-4">Field</TableHead>
+                                                        <TableHead className="text-[10px] uppercase font-bold text-zinc-500">Value</TableHead>
+                                                        <TableHead className="text-[10px] uppercase font-bold text-zinc-500">Confidence</TableHead>
+                                                        <TableHead className="text-[10px] uppercase font-bold text-zinc-500 text-right pr-4">Src</TableHead>
+                                                    </TableRow>
+                                                </TableHeader>
+                                                <TableBody>
+                                                    {renderDimRow("Height", dimensions.net.height, <Ruler className="w-3 h-3" />)}
+                                                    {renderDimRow("Length", dimensions.net.length, <Ruler className="w-3 h-3" />)}
+                                                    {renderDimRow("Width", dimensions.net.width, <Ruler className="w-3 h-3" />)}
+                                                    {renderDimRow("Depth", dimensions.net.depth, <Ruler className="w-3 h-3" />)}
+                                                    {renderDimRow("Weight", dimensions.net.weight, <Scale className="w-3 h-3" />)}
+                                                    {renderDimRow("Diameter", dimensions.net.diameter, <Ruler className="w-3 h-3" />)}
+                                                    {renderDimRow("Volume", dimensions.net.volume, <Database className="w-3 h-3" />)}
+                                                </TableBody>
+                                            </Table>
+                                        </div>
+                                    )}
+                                    {/* Packaged Dimensions */}
+                                    {hasDimData(dimensions.packaged) && (
+                                        <div>
+                                            <div className="px-4 py-2 bg-amber-500/5 border-b border-t border-zinc-800/50">
+                                                <span className="text-[10px] uppercase font-bold tracking-widest text-amber-400 flex items-center gap-1">
+                                                    <Package className="w-3 h-3" /> Packaged (Logistics)
+                                                </span>
+                                            </div>
+                                            <Table>
+                                                <TableBody>
+                                                    {renderDimRow("Height", dimensions.packaged.height, <Ruler className="w-3 h-3" />)}
+                                                    {renderDimRow("Length", dimensions.packaged.length, <Ruler className="w-3 h-3" />)}
+                                                    {renderDimRow("Width", dimensions.packaged.width, <Ruler className="w-3 h-3" />)}
+                                                    {renderDimRow("Depth", dimensions.packaged.depth, <Ruler className="w-3 h-3" />)}
+                                                    {renderDimRow("Weight", dimensions.packaged.weight, <Scale className="w-3 h-3" />)}
+                                                </TableBody>
+                                            </Table>
+                                        </div>
+                                    )}
+                                    {/* Color + COO */}
+                                    {(displayData.color?.value || displayData.country_of_origin?.value) && (
+                                        <div>
+                                            <div className="px-4 py-2 bg-zinc-800/30 border-t border-zinc-800/50">
+                                                <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-400">Other</span>
+                                            </div>
+                                            <Table>
+                                                <TableBody>
+                                                    {renderDimRow("Color", displayData.color, <Palette className="w-3 h-3" />)}
+                                                    {renderDimRow("Origin", displayData.country_of_origin, <Globe2 className="w-3 h-3" />)}
+                                                </TableBody>
+                                            </Table>
+                                        </div>
+                                    )}
+                                    {/* No data at all */}
+                                    {!hasDimData(dimensions.net) && !hasDimData(dimensions.packaged) && !displayData.color?.value && !displayData.country_of_origin?.value && (
+                                        <div className="p-8 text-center text-zinc-500">
+                                            <Database className="w-8 h-8 mx-auto mb-2 opacity-20" />
+                                            <p>No dimension data extracted yet.</p>
+                                        </div>
+                                    )}
+                                </div>
                             ) : (
                                 <div className="p-8 text-center text-zinc-500">
                                     <Database className="w-8 h-8 mx-auto mb-2 opacity-20" />
@@ -546,7 +766,134 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                         </CardContent>
                     </Card>
 
-                    {/* Product Images Gallery */}
+                    {/* ═══ Technical Specifications Card ═══ */}
+                    {techData && techData.specs && techData.specs.length > 0 && (
+                        <Card className="border-zinc-800 bg-zinc-900/50 backdrop-blur-sm">
+                            <CardHeader
+                                className="border-b border-zinc-800/50 cursor-pointer"
+                                onClick={() => setTechSpecsExpanded(!techSpecsExpanded)}
+                            >
+                                <div className="flex items-center justify-between">
+                                    <CardTitle className="text-sm uppercase tracking-widest text-zinc-400 flex items-center gap-2">
+                                        <Wrench className="w-4 h-4 text-violet-400" /> Technical Specifications
+                                        <Badge className="bg-zinc-800 text-zinc-400 border-zinc-700 text-[10px]">{techData.specs.length}</Badge>
+                                    </CardTitle>
+                                    {techSpecsExpanded ? <ChevronUp className="w-4 h-4 text-zinc-500" /> : <ChevronDown className="w-4 h-4 text-zinc-500" />}
+                                </div>
+                            </CardHeader>
+                            {(techSpecsExpanded || techData.specs.length <= 8) && (
+                                <CardContent className="p-0">
+                                    <Table>
+                                        <TableHeader className="bg-zinc-950/30">
+                                            <TableRow className="border-zinc-800 hover:bg-transparent">
+                                                <TableHead className="text-[10px] uppercase font-bold text-zinc-500 pl-4">Specification</TableHead>
+                                                <TableHead className="text-[10px] uppercase font-bold text-zinc-500">Value</TableHead>
+                                                <TableHead className="text-[10px] uppercase font-bold text-zinc-500 text-right pr-4">Confidence</TableHead>
+                                            </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                            {techData.specs.map((spec: any, i: number) => (
+                                                <TableRow key={i} className="border-zinc-800/50 hover:bg-zinc-800/30">
+                                                    <TableCell className="text-zinc-400 text-xs font-medium pl-4 py-1.5">{spec.name}</TableCell>
+                                                    <TableCell className="text-zinc-200 font-mono text-xs py-1.5">
+                                                        {spec.value} {spec.unit || ''}
+                                                    </TableCell>
+                                                    <TableCell className="text-right pr-4 py-1.5">
+                                                        <ConfidenceBadge confidence={spec.confidence} />
+                                                    </TableCell>
+                                                </TableRow>
+                                            ))}
+                                        </TableBody>
+                                    </Table>
+                                </CardContent>
+                            )}
+                            {!techSpecsExpanded && techData.specs.length > 8 && (
+                                <CardContent className="py-2 text-center">
+                                    <span className="text-xs text-zinc-600">Click header to expand {techData.specs.length} specifications</span>
+                                </CardContent>
+                            )}
+                        </Card>
+                    )}
+
+                    {/* ═══ Warranty Card ═══ */}
+                    {warranty && warranty.duration?.value && (
+                        <Card className="border-zinc-800 bg-zinc-900/50 backdrop-blur-sm">
+                            <CardHeader className="border-b border-zinc-800/50">
+                                <CardTitle className="text-sm uppercase tracking-widest text-zinc-400 flex items-center gap-2">
+                                    <Shield className="w-4 h-4 text-teal-400" /> Warranty
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent className="pt-4 space-y-2">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-zinc-400 text-sm">Duration</span>
+                                    <span className="text-zinc-200 font-medium">{String(warranty.duration.value)}</span>
+                                </div>
+                                {warranty.type && (
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-zinc-400 text-sm">Type</span>
+                                        <Badge className="bg-teal-500/10 text-teal-400 border-teal-500/20 text-[10px] uppercase">{warranty.type}</Badge>
+                                    </div>
+                                )}
+                                {warranty.conditions && (
+                                    <div className="text-xs text-zinc-500 mt-1 p-2 bg-zinc-800/50 rounded">
+                                        {warranty.conditions}
+                                    </div>
+                                )}
+                                <div className="flex items-center gap-1">
+                                    <ConfidenceBadge confidence={warranty.confidence || warranty.duration?.confidence} />
+                                    {warranty.source_url && (
+                                        <a href={warranty.source_url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 ml-auto">
+                                            <ExternalLink className="w-3 h-3" />
+                                        </a>
+                                    )}
+                                </div>
+                            </CardContent>
+                        </Card>
+                    )}
+
+                    {/* ═══ Documents / PDFs Card ═══ */}
+                    {documents && documents.documents && documents.documents.length > 0 && (
+                        <Card className="border-zinc-800 bg-zinc-900/50 backdrop-blur-sm">
+                            <CardHeader className="border-b border-zinc-800/50">
+                                <CardTitle className="text-sm uppercase tracking-widest text-zinc-400 flex items-center gap-2">
+                                    <FileDown className="w-4 h-4 text-rose-400" /> Documents & PDFs
+                                    <Badge className="bg-zinc-800 text-zinc-400 border-zinc-700 text-[10px]">{documents.documents.length}</Badge>
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent className="pt-3 space-y-1">
+                                {documents.documents.map((doc: any, i: number) => {
+                                    const typeColors: Record<string, string> = {
+                                        manual: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+                                        datasheet: 'bg-violet-500/10 text-violet-400 border-violet-500/20',
+                                        certificate: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+                                        warranty: 'bg-teal-500/10 text-teal-400 border-teal-500/20',
+                                        safety: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
+                                        brochure: 'bg-pink-500/10 text-pink-400 border-pink-500/20',
+                                        other: 'bg-zinc-800 text-zinc-400 border-zinc-700',
+                                    };
+                                    return (
+                                        <div key={i} className="flex items-center gap-2 text-xs py-1.5 border-b border-zinc-800/30 last:border-0">
+                                            <BookOpen className="w-3 h-3 text-zinc-500 shrink-0" />
+                                            <Badge className={`text-[9px] px-1 shrink-0 ${typeColors[doc.doc_type] || typeColors.other}`}>
+                                                {doc.doc_type}
+                                            </Badge>
+                                            <a href={doc.url} target="_blank" rel="noreferrer" className="text-zinc-300 hover:text-white truncate flex-1">
+                                                {doc.title}
+                                            </a>
+                                            {doc.language && (
+                                                <Badge className="bg-zinc-800 text-zinc-500 border-zinc-700 text-[9px]">{doc.language}</Badge>
+                                            )}
+                                            <a href={doc.url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 shrink-0">
+                                                <Download className="w-3 h-3" />
+                                            </a>
+                                        </div>
+                                    );
+                                })}
+                            </CardContent>
+                        </Card>
+                    )}
+
+                    {/* ═══ Product Images Gallery ═══ */}
                     {allImages.length > 0 && (
                         <Card className="border-zinc-800 bg-zinc-900/50 backdrop-blur-sm">
                             <CardHeader className="border-b border-zinc-800/50">

@@ -33,16 +33,19 @@ def init_db():
             extraction_result TEXT,
             validation_result TEXT,
             enrichment_log TEXT,
+            cost_data TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
     # Migration: add current_step column if it doesn't exist (for existing DBs)
-    try:
-        c.execute("ALTER TABLE products ADD COLUMN current_step TEXT")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
+    # Migrations for existing DBs
+    for col in ['current_step TEXT', 'cost_data TEXT']:
+        try:
+            c.execute(f"ALTER TABLE products ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
     conn.commit()
     conn.close()
@@ -84,6 +87,17 @@ def append_log(product_id: int, entry: dict):
         "type": "log",
         "entry": entry,
     })
+
+
+def save_cost_data(product_id: int, cost_summary: dict):
+    """Persist the cost tracking summary for a product."""
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE products SET cost_data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (json.dumps(cost_summary), product_id)
+    )
+    conn.commit()
+    conn.close()
 
 
 if __name__ == "__main__":

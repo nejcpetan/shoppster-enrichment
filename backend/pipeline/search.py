@@ -22,6 +22,7 @@ async def search_node(state: dict) -> dict:
     Finds product pages via Tavily, classifies URLs via Claude.
     """
     product_id = state["product_id"]
+    cost_tracker = state.get("cost_tracker")
 
     logger.info(f"[Product {product_id}] ▶ SEARCH — Finding product pages")
     update_step(product_id, "searching", "Loading product data...")
@@ -64,6 +65,7 @@ async def search_node(state: dict) -> dict:
 
     # Run searches
     all_results = []
+    tavily_calls = 0
     for q in queries[:3]:
         update_step(product_id, "searching", f"Searching: {q[:50]}...")
         try:
@@ -72,6 +74,11 @@ async def search_node(state: dict) -> dict:
             num_results = len(response.get('results', []))
             logger.info(f"[Product {product_id}]   → {num_results} results")
             all_results.extend(response.get('results', []))
+            tavily_calls += 1
+
+            # Track Tavily cost
+            if cost_tracker:
+                cost_tracker.add_api_call("tavily", credits=1, phase="search")
 
             append_log(product_id, {
                 "timestamp": datetime.now().isoformat(),
@@ -136,12 +143,20 @@ Search results to classify:
         user_prompt += f"- {r['url']} | {r['title']}\n"
 
     try:
-        classified_list = classify_with_schema(
+        classified_list, usage = classify_with_schema(
             prompt=user_prompt,
             system=system_prompt,
             schema=SearchResultList,
-            model="haiku"
+            model="haiku",
+            return_usage=True
         )
+
+        # Track Claude cost
+        if cost_tracker:
+            cost_tracker.add_llm_call(
+                usage["model"], usage["input_tokens"], usage["output_tokens"],
+                phase="search"
+            )
 
         type_counts = {}
         for r in classified_list.results:
@@ -153,7 +168,7 @@ Search results to classify:
             "timestamp": datetime.now().isoformat(),
             "phase": "search", "step": "url_classification", "status": "success",
             "details": f"Classified {len(classified_list.results)} URLs: {summary}",
-            "credits_used": {"claude_tokens": 500}
+            "credits_used": {"claude_in": usage["input_tokens"], "claude_out": usage["output_tokens"]}
         })
 
         # Save results

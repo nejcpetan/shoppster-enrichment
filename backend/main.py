@@ -9,12 +9,15 @@ import logging
 import asyncio
 import time
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel
 from db import get_db_connection, init_db, update_step
 from schemas import ProductResponse
 from graph import enrichment_pipeline, ProductState
 from events import event_bus, format_sse
+from utils.cost_tracker import (
+    check_can_process, get_daily_stats, get_limits, set_limits
+)
 
 # --- Logging ---
 logging.basicConfig(
@@ -44,6 +47,11 @@ app.add_middleware(
 
 class BatchProcessRequest(BaseModel):
     product_ids: List[int]
+
+class LimitsUpdateRequest(BaseModel):
+    daily_product_limit: Optional[int] = None
+    max_batch_size: Optional[int] = None
+    max_daily_cost_usd: Optional[float] = None
 
 @app.on_event("startup")
 async def startup_event():
@@ -225,12 +233,17 @@ def run_full_enrichment(product_id: int):
         # Set initial status (publishes SSE event via thread-safe event bus)
         update_step(product_id, "enriching", "Initializing pipeline...")
 
+        # Initialize cost tracker for this run
+        from utils.cost_tracker import CostTracker
+        cost_tracker = CostTracker(product_id)
+
         # Build initial state
         initial_state: ProductState = {
             "product_id": product_id,
             "has_brand": False,
             "has_search_results": False,
             "error": None,
+            "cost_tracker": cost_tracker,
         }
 
         # Run the async LangGraph pipeline in its own event loop (in this thread)
@@ -299,6 +312,16 @@ async def process_all_products(background_tasks: BackgroundTasks):
         conn.close()
         return {"message": "No pending products found"}
 
+    # ── Cost guardrail check ──
+    allowed, reason = check_can_process(len(product_ids))
+    if not allowed:
+        conn.close()
+        raise HTTPException(status_code=429, detail=reason)
+
+    # Cap at max batch size
+    limits = get_limits()
+    product_ids = product_ids[:limits["max_batch_size"]]
+
     # Set status immediately before background task — fixes race condition
     for pid in product_ids:
         conn.execute(
@@ -323,6 +346,11 @@ async def process_all_products(background_tasks: BackgroundTasks):
 async def process_batch_products(request: BatchProcessRequest, background_tasks: BackgroundTasks):
     if not request.product_ids:
         return {"message": "No product IDs provided"}
+
+    # ── Cost guardrail check ──
+    allowed, reason = check_can_process(len(request.product_ids))
+    if not allowed:
+        raise HTTPException(status_code=429, detail=reason)
 
     # Set status immediately before background task — fixes race condition
     conn = get_db_connection()
@@ -494,7 +522,7 @@ async def reset_product(id: int):
         SET status = 'pending', current_step = NULL,
             classification_result = NULL, search_result = NULL,
             extraction_result = NULL, validation_result = NULL,
-            enrichment_log = NULL, product_type = NULL,
+            enrichment_log = NULL, cost_data = NULL, product_type = NULL,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
     """, (id,))
@@ -550,6 +578,25 @@ def get_dashboard_stats():
         "errors": errors, "needs_review": needs_review, "processing": processing
     }
 
+
+@app.get("/api/dashboard/costs")
+def get_cost_stats():
+    """Return daily cost stats, all-time aggregates, and current guardrail limits."""
+    return get_daily_stats()
+
+
+@app.get("/api/dashboard/limits")
+def get_guardrail_limits():
+    """Return current guardrail limits."""
+    return get_limits()
+
+
+@app.put("/api/dashboard/limits")
+def update_guardrail_limits(request: LimitsUpdateRequest):
+    """Update guardrail limits at runtime (from the UI)."""
+    updated = set_limits(request.model_dump(exclude_none=True))
+    return {"message": "Limits updated", "limits": updated}
+
 # --- Export All ---
 
 @app.get("/api/export")
@@ -593,24 +640,86 @@ def _build_export_row(row: dict) -> dict:
             export_row['Quality Status'] = 'raw_extraction'
         except: pass
 
-    for field in ['height', 'width', 'length', 'weight', 'volume', 'color', 'country_of_origin', 'diameter']:
-        val = None
-        unit = None
-        if field in enriched_data:
-            field_obj = enriched_data[field]
-            if field_obj and isinstance(field_obj, dict):
-                val = field_obj.get('value')
-                unit = field_obj.get('unit')
-
-        export_row[f"{field.replace('_', ' ').title()}"] = val
-        export_row[f"{field.replace('_', ' ').title()} Unit"] = unit
-
+    # Classification
     if row.get('classification_result'):
         try:
             cls_res = json.loads(row['classification_result'])
             export_row['Type'] = cls_res.get('product_type')
             export_row['Brand'] = cls_res.get('brand')
         except: pass
+
+    # Helper to extract EnrichedField value/unit from a nested dict
+    def _field_val(data: dict, *path) -> tuple:
+        """Traverse nested dict and return (value, unit) tuple."""
+        obj = data
+        for key in path:
+            if isinstance(obj, dict) and key in obj:
+                obj = obj[key]
+            else:
+                return (None, None)
+        if isinstance(obj, dict):
+            return (obj.get('value'), obj.get('unit'))
+        return (None, None)
+
+    # Net dimensions
+    for dim_field in ['height', 'width', 'length', 'depth', 'weight', 'diameter', 'volume']:
+        val, unit = _field_val(enriched_data, 'dimensions', 'net', dim_field)
+        label = f"Net {dim_field.title()}"
+        export_row[label] = val
+        export_row[f"{label} Unit"] = unit
+
+    # Packaged dimensions
+    for dim_field in ['height', 'width', 'length', 'depth', 'weight']:
+        val, unit = _field_val(enriched_data, 'dimensions', 'packaged', dim_field)
+        label = f"Pkg {dim_field.title()}"
+        export_row[label] = val
+        export_row[f"{label} Unit"] = unit
+
+    # Color + COO
+    color_val, _ = _field_val(enriched_data, 'color')
+    export_row['Color'] = color_val
+    coo_val, _ = _field_val(enriched_data, 'country_of_origin')
+    export_row['Country Of Origin'] = coo_val
+
+    # Descriptions
+    desc = enriched_data.get('descriptions', {})
+    short_desc = desc.get('short_description', {})
+    if isinstance(short_desc, dict):
+        export_row['Short Description'] = short_desc.get('value')
+    mktg_desc = desc.get('marketing_description', {})
+    if isinstance(mktg_desc, dict):
+        export_row['Marketing Description'] = mktg_desc.get('value')
+    features = desc.get('features', [])
+    if features:
+        export_row['Features'] = "; ".join(features[:20])
+
+    # Technical Specs
+    tech = enriched_data.get('technical_data', {})
+    specs = tech.get('specs', [])
+    if specs:
+        export_row['Tech Specs Count'] = len(specs)
+        # Flatten first 30 specs as individual columns
+        for spec in specs[:30]:
+            if isinstance(spec, dict) and spec.get('name'):
+                col_name = f"Spec: {spec['name']}"
+                spec_val = spec.get('value', '')
+                spec_unit = spec.get('unit', '')
+                export_row[col_name] = f"{spec_val} {spec_unit}".strip() if spec_val else None
+
+    # Warranty
+    warranty = enriched_data.get('warranty', {})
+    war_dur = warranty.get('duration', {})
+    if isinstance(war_dur, dict):
+        export_row['Warranty Duration'] = war_dur.get('value')
+    export_row['Warranty Type'] = warranty.get('type')
+
+    # Documents
+    docs = enriched_data.get('documents', {})
+    doc_list = docs.get('documents', [])
+    if doc_list:
+        export_row['Documents Count'] = len(doc_list)
+        doc_urls = [d.get('url', '') for d in doc_list if isinstance(d, dict)]
+        export_row['Document URLs'] = "; ".join(doc_urls)
 
     return export_row
 

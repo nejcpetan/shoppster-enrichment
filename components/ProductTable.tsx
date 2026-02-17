@@ -10,7 +10,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
     ArrowUpDown, ChevronRight,
     Ruler, Weight, Palette, Globe, AlertCircle, CheckCircle2,
-    Zap, Loader2, X, AlertTriangle, Brain, Search, FileText, ShieldCheck
+    Zap, Loader2, X, AlertTriangle, Brain, Search, FileText, ShieldCheck, DollarSign
 } from "lucide-react";
 import { fetchAPI } from "@/lib/api";
 import { useProductsStream } from "@/lib/sse";
@@ -161,6 +161,22 @@ export function ProductTable({ refreshTrigger, onStatusChange: onStatusChangePro
         } catch { return <span className="text-zinc-700">Error</span> }
     };
 
+    const getCost = (product: any) => {
+        if (!product.cost_data) return <span className="text-zinc-800">-</span>;
+        try {
+            const data = JSON.parse(product.cost_data);
+            const cost = data.total_cost_usd;
+            if (cost === undefined || cost === null) return <span className="text-zinc-800">-</span>;
+            // Highlight high costs
+            const isHigh = cost > 0.50;
+            return (
+                <span className={`font-mono text-xs ${isHigh ? 'text-yellow-500 font-bold' : 'text-zinc-400'}`}>
+                    ${Number(cost).toFixed(4)}
+                </span>
+            );
+        } catch { return <span className="text-zinc-800">-</span>; }
+    };
+
     return (
         <div className="w-full h-full flex flex-col space-y-4 relative">
             {/* Floating Action Bar */}
@@ -206,7 +222,7 @@ export function ProductTable({ refreshTrigger, onStatusChange: onStatusChangePro
 
             {/* Main Table */}
             <div className="w-full rounded-lg border border-zinc-800 bg-zinc-900/40 backdrop-blur-sm overflow-hidden shadow-2xl shadow-black/20 flex-1 relative">
-                <div className="overflow-x-auto h-full max-h-[600px]">
+                <div className="overflow-auto h-full">
                     <Table className="w-full whitespace-nowrap">
                         <TableHeader className="bg-zinc-950/80 border-b border-zinc-800/80 sticky top-0 z-10 backdrop-blur-md">
                             <TableRow className="border-none hover:bg-transparent h-10">
@@ -224,6 +240,7 @@ export function ProductTable({ refreshTrigger, onStatusChange: onStatusChangePro
                                 <TableHead className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 w-[80px] text-center"><Weight className="w-3 h-3 mx-auto mb-1" /> Wgt.</TableHead>
                                 <TableHead className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 w-[80px] text-center"><Palette className="w-3 h-3 mx-auto mb-1" /> Color</TableHead>
                                 <TableHead className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 w-[80px] text-center"><Globe className="w-3 h-3 mx-auto mb-1" /> Origin</TableHead>
+                                <TableHead className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 w-[80px] text-center"><DollarSign className="w-3 h-3 mx-auto mb-1" /> Cost</TableHead>
                                 <TableHead className="w-[40px]"></TableHead>
                             </TableRow>
                         </TableHeader>
@@ -362,6 +379,11 @@ export function ProductTable({ refreshTrigger, onStatusChange: onStatusChangePro
                                         {/* Origin */}
                                         <TableCell className="text-center">
                                             {getEnrichedVal(product, 'country_of_origin')}
+                                        </TableCell>
+
+                                        {/* Cost */}
+                                        <TableCell className="text-center">
+                                            {getCost(product)}
                                         </TableCell>
 
                                         {/* Chevron */}
