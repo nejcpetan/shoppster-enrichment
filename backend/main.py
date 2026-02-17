@@ -63,6 +63,19 @@ def _run_async_in_thread(async_fn, *args):
     finally:
         loop.close()
 
+def _publish_final_status(product_id: int):
+    """Read current status from DB and publish SSE event.
+    Needed because pipeline nodes write terminal status directly to DB."""
+    conn = get_db_connection()
+    row = conn.execute("SELECT status, current_step FROM products WHERE id = ?", (product_id,)).fetchone()
+    conn.close()
+    if row:
+        event_bus.publish_product_event(product_id, {
+            "type": "status",
+            "status": row["status"],
+            "current_step": row["current_step"],
+        })
+
 # --- Upload ---
 
 @app.post("/api/upload")
@@ -226,6 +239,19 @@ def run_full_enrichment(product_id: int):
         if result.get("error"):
             raise Exception(result["error"])
 
+        # Publish final status for SSE clients.
+        # Pipeline nodes (e.g. validate) write terminal status directly to DB
+        # without calling update_step(), so we read it back and publish here.
+        conn = get_db_connection()
+        final_row = conn.execute("SELECT status, current_step FROM products WHERE id = ?", (product_id,)).fetchone()
+        conn.close()
+        if final_row:
+            event_bus.publish_product_event(product_id, {
+                "type": "status",
+                "status": final_row["status"],
+                "current_step": final_row["current_step"],
+            })
+
         logger.info(f"[Product {product_id}] ✓ PIPELINE COMPLETE — {product_name}")
         logger.info(f"{'='*60}")
 
@@ -374,6 +400,7 @@ async def trigger_classify(id: int, background_tasks: BackgroundTasks):
             triage_node,
             {"product_id": id, "has_brand": False, "has_search_results": False, "error": None}
         )
+        _publish_final_status(id)
     background_tasks.add_task(run)
     return {"message": "Classification started"}
 
@@ -399,6 +426,7 @@ async def trigger_search(id: int, background_tasks: BackgroundTasks):
             search_node,
             {"product_id": id, "has_brand": True, "has_search_results": False, "error": None}
         )
+        _publish_final_status(id)
     background_tasks.add_task(run)
     return {"message": "Search started"}
 
@@ -424,6 +452,7 @@ async def trigger_extract(id: int, background_tasks: BackgroundTasks):
             extract_node,
             {"product_id": id, "has_brand": True, "has_search_results": True, "error": None}
         )
+        _publish_final_status(id)
     background_tasks.add_task(run)
     return {"message": "Extraction started"}
 
@@ -449,6 +478,7 @@ async def trigger_validate(id: int, background_tasks: BackgroundTasks):
             validate_node,
             {"product_id": id, "has_brand": True, "has_search_results": True, "error": None}
         )
+        _publish_final_status(id)
     background_tasks.add_task(run)
     return {"message": "Validation started"}
 
