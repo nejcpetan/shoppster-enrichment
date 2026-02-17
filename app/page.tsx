@@ -10,7 +10,6 @@ import {
   AlertCircle, Clock, Loader2, AlertTriangle
 } from "lucide-react";
 import { fetchAPI } from "@/lib/api";
-import { useProductsStream } from "@/lib/sse";
 
 interface DashboardStats {
   total: number;
@@ -40,15 +39,17 @@ export default function Home() {
     loadStats();
   }, [refreshTrigger]);
 
-  // SSE: debounced stats refresh on any product status change
-  useProductsStream({
-    onStatusChange: useCallback(() => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(() => {
-        loadStats();
-      }, 500);
-    }, []),
-  });
+  // Debounced stats refresh — called by ProductTable's SSE handler
+  const handleStatusChange = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      loadStats();
+    }, 500);
+  }, []);
+
+  useEffect(() => {
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, []);
 
   const processing = (stats?.processing ?? 0) > 0;
 
@@ -166,7 +167,7 @@ export default function Home() {
 
         {/* Full Width Table Section */}
         <section className="space-y-4 h-[calc(100vh-400px)] min-h-[500px]">
-          <ProductTable refreshTrigger={refreshTrigger} />
+          <ProductTable refreshTrigger={refreshTrigger} onStatusChange={handleStatusChange} />
         </section>
       </main>
     </div>

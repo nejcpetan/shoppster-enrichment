@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
     Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from "@/components/ui/table";
@@ -34,7 +34,9 @@ function getPhaseIndex(status: string): number {
     return idx;
 }
 
-export function ProductTable({ refreshTrigger }: { refreshTrigger: number }) {
+export function ProductTable({ refreshTrigger, onStatusChange: onStatusChangeProp }: { refreshTrigger: number; onStatusChange?: () => void }) {
+    const onStatusChangePropRef = useRef(onStatusChangeProp);
+    onStatusChangePropRef.current = onStatusChangeProp;
     const [products, setProducts] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -45,7 +47,7 @@ export function ProductTable({ refreshTrigger }: { refreshTrigger: number }) {
         loadProducts();
     }, [refreshTrigger]);
 
-    // SSE: real-time status updates for all products
+    // SSE: single connection for real-time status updates (shared with parent via callback)
     useProductsStream({
         onStatusChange: useCallback((data: { product_id: number; status: string; current_step: string | null }) => {
             setProducts(prev => prev.map(p => {
@@ -54,6 +56,9 @@ export function ProductTable({ refreshTrigger }: { refreshTrigger: number }) {
                 }
                 return p;
             }));
+
+            // Notify parent (page.tsx) so it can refresh stats
+            onStatusChangePropRef.current?.();
 
             // On terminal status, refetch full data to get extraction/validation results
             if (TERMINAL_STATUSES.includes(data.status)) {
