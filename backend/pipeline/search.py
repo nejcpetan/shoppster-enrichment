@@ -57,52 +57,143 @@ async def search_node(state: dict) -> dict:
         queries.append(f"{product['product_name']} {ean}")
     queries.append(f"{ean}")  # EAN-only fallback
 
-    tavily_key = os.getenv("TAVILY_API_KEY")
-    if not tavily_key:
-        return {"error": "TAVILY_API_KEY not found"}
+    # Determine search provider
+    search_provider = os.getenv("SEARCH_PROVIDER", "tavily").lower()
+    
+    # ─── Provider: Tavily ─────────────────────────────────────────────────────
+    if search_provider == "tavily":
+        tavily_key = os.getenv("TAVILY_API_KEY")
+        if not tavily_key:
+            return {"error": "TAVILY_API_KEY not found"}
 
-    client = TavilyClient(api_key=tavily_key)
+        client = TavilyClient(api_key=tavily_key)
+        all_results = []
+        
+        for q in queries[:3]:
+            update_step(product_id, "searching", f"Searching (Tavily): {q[:50]}...")
+            try:
+                logger.info(f"[Product {product_id}]   Tavily search: '{q}'")
+                response = client.search(query=q, max_results=7)
+                num_results = len(response.get('results', []))
+                logger.info(f"[Product {product_id}]   → {num_results} results")
+                all_results.extend(response.get('results', []))
+                
+                # Track Tavily cost
+                if cost_tracker:
+                    cost_tracker.add_api_call("tavily", credits=1, phase="search")
 
-    # Run searches
-    all_results = []
-    tavily_calls = 0
-    for q in queries[:3]:
-        update_step(product_id, "searching", f"Searching: {q[:50]}...")
-        try:
-            logger.info(f"[Product {product_id}]   Tavily search: '{q}'")
-            response = client.search(query=q, max_results=7)
-            num_results = len(response.get('results', []))
-            logger.info(f"[Product {product_id}]   → {num_results} results")
-            all_results.extend(response.get('results', []))
-            tavily_calls += 1
+                append_log(product_id, {
+                    "timestamp": datetime.now().isoformat(),
+                    "phase": "search", "step": "tavily_search", "status": "success",
+                    "details": f"Query '{q}' → {num_results} results",
+                    "credits_used": {"tavily": 1}
+                })
 
-            # Track Tavily cost
-            if cost_tracker:
-                cost_tracker.add_api_call("tavily", credits=1, phase="search")
+                if num_results >= 3:
+                    break
+            except Exception as e:
+                logger.warning(f"[Product {product_id}]   Search failed for '{q}': {e}")
+                append_log(product_id, {
+                    "timestamp": datetime.now().isoformat(),
+                    "phase": "search", "step": "tavily_search", "status": "error",
+                    "details": f"Query '{q}' failed: {str(e)}"
+                })
 
-            append_log(product_id, {
-                "timestamp": datetime.now().isoformat(),
-                "phase": "search", "step": "tavily_search", "status": "success",
-                "details": f"Query '{q}' → {num_results} results",
-                "credits_used": {"tavily": 1}
-            })
+    # ─── Provider: Firecrawl ──────────────────────────────────────────────────
+    elif search_provider == "firecrawl":
+        fc_api_key = os.getenv("FIRECRAWL_API_KEY")
+        if not fc_api_key:
+            return {"error": "FIRECRAWL_API_KEY not found"}
+        
+        from firecrawl import FirecrawlApp
+        app = FirecrawlApp(api_key=fc_api_key)
+        all_results = []
 
-            if num_results >= 3:
-                break
-        except Exception as e:
-            logger.warning(f"[Product {product_id}]   Search failed for '{q}': {e}")
-            append_log(product_id, {
-                "timestamp": datetime.now().isoformat(),
-                "phase": "search", "step": "tavily_search", "status": "error",
-                "details": f"Query '{q}' failed: {str(e)}"
-            })
+        for q in queries[:3]:
+            update_step(product_id, "searching", f"Searching (Firecrawl): {q[:50]}...")
+            try:
+                logger.info(f"[Product {product_id}]   Firecrawl search: '{q}'")
+                
+                # Check if FirecrawlApp uses search(query, limit=7) or params=
+                # SDK documentation says params are passed as keyword arguments
+                response = app.search(q, limit=7)
+                
+                # Normalize results to match Tavily structure
+                results_list = []
+                
+                # Handling response structure:
+                # Firecrawl SDK v1 returns an object (SearchData) with 'web' attribute containing objects (SearchResultWeb)
+                # Helper to get attribute or dict key
+                def get_val(obj, key, default=None):
+                    if isinstance(obj, dict):
+                        return obj.get(key, default)
+                    return getattr(obj, key, default)
+
+                raw_items = []
+                if hasattr(response, 'web'):
+                    raw_items = response.web
+                elif isinstance(response, dict):
+                    if 'data' in response and isinstance(response['data'], dict):
+                        raw_items = response['data'].get('web', [])
+                    else:
+                        raw_items = response.get('web', [])
+                
+                if not raw_items and hasattr(response, 'data'):
+                     # Fallback for some SDK versions
+                     data_obj = response.data
+                     if hasattr(data_obj, 'web'):
+                         raw_items = data_obj.web
+
+                logger.info(f"[Product {product_id}]   → {len(raw_items)} raw results found")
+
+                for item in raw_items:
+                    url = get_val(item, 'url')
+                    title = get_val(item, 'title', 'No title')
+                    desc = get_val(item, 'description') or get_val(item, 'markdown') or ''
+                    
+                    results_list.append({
+                        'url': url,
+                        'title': title,
+                        'content': desc[:200]
+                    })
+                
+                num_results = len(results_list)
+                logger.info(f"[Product {product_id}]   → {num_results} results")
+                all_results.extend(results_list)
+
+                # Track Firecrawl cost (2 credits per search)
+                if cost_tracker:
+                    cost_tracker.add_api_call("firecrawl", credits=2, phase="search_query")
+
+                append_log(product_id, {
+                    "timestamp": datetime.now().isoformat(),
+                    "phase": "search", "step": "firecrawl_search", "status": "success",
+                    "details": f"Query '{q}' → {num_results} results",
+                    "credits_used": {"firecrawl": 2} # 2 credits per search
+                })
+
+                if num_results >= 3:
+                    break
+
+            except Exception as e:
+                logger.warning(f"[Product {product_id}]   Firecrawl search failed for '{q}': {e}")
+                append_log(product_id, {
+                    "timestamp": datetime.now().isoformat(),
+                    "phase": "search", "step": "firecrawl_search", "status": "error",
+                    "details": f"Query '{q}' failed: {str(e)}"
+                })
+
+    else:
+        return {"error": f"Unknown SEARCH_PROVIDER: {search_provider}"}
 
     # Deduplicate
     seen_urls = set()
     unique_results = []
     for r in all_results:
-        if r['url'] not in seen_urls:
-            seen_urls.add(r['url'])
+        # Firecrawl results might be missing 'url' if error, so safe get
+        u = r.get('url')
+        if u and u not in seen_urls:
+            seen_urls.add(u)
             unique_results.append(r)
 
     if not unique_results:
