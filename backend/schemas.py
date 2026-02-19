@@ -162,9 +162,16 @@ class DimensionsExtraction(BaseModel):
 
 
 class ContentExtraction(BaseModel):
-    """Schema sent to LLM for content/description extraction from a single page."""
-    short_description: str = ""
-    marketing_description: str = ""
+    """Schema sent to LLM for content/description extraction from a single page.
+
+    Descriptions use start/end markers (~50 chars each) instead of full text.
+    The full text is resolved deterministically from the cached scraped markdown,
+    saving output tokens and avoiding truncation.
+    """
+    short_description_start: str = ""   # First ~50 chars of the short description
+    short_description_end: str = ""     # Last ~50 chars of the short description
+    marketing_description_start: str = ""  # First ~50 chars of the marketing description
+    marketing_description_end: str = ""    # Last ~50 chars of the marketing description
     features: List[str] = Field(default_factory=list)
     technical_specs: List[TechnicalSpec] = Field(default_factory=list)
     warranty_duration: str = ""

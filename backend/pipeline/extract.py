@@ -24,7 +24,7 @@ from urllib.parse import urljoin, urlparse
 from firecrawl import FirecrawlApp
 from pydantic import BaseModel
 from tavily import TavilyClient
-from db import get_db_connection, update_step, append_log, save_scraped_page, mark_page_extracted
+from db import get_db_connection, update_step, append_log, save_scraped_page, mark_page_extracted, get_scraped_pages
 from utils.llm import classify_with_schema, get_raw_client, HAIKU_MODEL
 from schemas import (
     EnrichedProduct, EnrichedField, ProductClassification,
@@ -243,6 +243,7 @@ async def extract_node(state: dict) -> dict:
     dimension_extractions: List[DimensionsExtraction] = []
     content_extractions: List[ContentExtraction] = []
     content_source_urls: List[str] = []
+    content_source_types: List[str] = []  # Track source tier for description preference
     all_discovered_images: List[str] = []
     all_pdf_links: List[Dict[str, str]] = []
     fc_api_key = os.getenv("FIRECRAWL_API_KEY")
@@ -387,16 +388,21 @@ Also extract:
             logger.info(f"[Product {product_id}]   Pass 2: Content extraction from {_shorten_url(url)}...")
             update_step(product_id, "extracting", f"Pass 2: Content from {_shorten_url(url)}...")
 
-            pass2_user = f"""Extract marketing and technical content from the page content above.
+            pass2_user = f"""Extract technical content and description MARKERS from the page content above.
 
-1. SHORT DESCRIPTION:
-   The brief product summary, usually 1-2 sentences at the top of the product page.
-   Copy it verbatim from the page. If in a non-English language, keep the original language.
+1. SHORT DESCRIPTION (markers only):
+   The brief product summary, usually 1-2 sentences near the top of the product page.
+   Return ONLY the first ~50 characters as short_description_start
+   and the last ~50 characters as short_description_end.
+   These markers will be used to locate the full text in the raw page content.
+   Do NOT return the full description text.
 
-2. MARKETING DESCRIPTION:
+2. MARKETING DESCRIPTION (markers only):
    The longer marketing/promotional text describing product features and benefits.
-   This is typically found below the product title. Keep original language.
-   If there are multiple marketing paragraphs, combine them.
+   Return ONLY the first ~50 characters as marketing_description_start
+   and the last ~50 characters as marketing_description_end.
+   These markers will be used to locate the full text in the raw page content.
+   Do NOT return the full description text.
 
 3. FEATURES:
    A list of product features/highlights. Often presented as bullet points on the page.
@@ -415,6 +421,7 @@ Also extract:
 
 RULES:
 - DO NOT fabricate content. Only extract what is actually on the page.
+- For descriptions, return EXACT text from the page as markers (copy-paste, not paraphrased).
 - Keep original language text (Slovenian, German, English, etc.) — do NOT translate.
 - If a field is not present on the page, leave it empty."""
 
@@ -426,10 +433,11 @@ RULES:
                     model="haiku",
                     return_usage=True,
                     cached_content=page_content,
-                    max_tokens=8192,  # ContentExtraction with many features/specs can be large
+                    max_tokens=4096,  # Reduced: descriptions use markers now, not full text
                 )
                 content_extractions.append(content_extraction)
                 content_source_urls.append(url)
+                content_source_types.append(source_type)
 
                 # Track cost (with cache metrics)
                 if cost_tracker:
@@ -554,7 +562,9 @@ RULES:
 
     # ── Merge Content ─────────────────────────────────────────────────────
     update_step(product_id, "extracting", "Merging content data...")
-    merged.descriptions = _merge_content_descriptions(content_extractions, content_source_urls)
+    merged.descriptions = _merge_content_descriptions(
+        content_extractions, content_source_urls, content_source_types, product_id
+    )
     merged.technical_data = _merge_technical_specs(content_extractions)
     merged.warranty = _merge_warranty(content_extractions, content_source_urls)
 
@@ -737,31 +747,104 @@ def _merge_dimension_extractions(extractions: List[DimensionsExtraction]) -> Pro
     return dims
 
 
+def _resolve_text_from_markdown(
+    start_marker: str, end_marker: str, markdown: str
+) -> str | None:
+    """
+    Find full text in cached markdown using start/end markers from the LLM.
+
+    Strategy:
+    1. Find the start marker in the markdown (fuzzy: strip whitespace, ignore case first chars)
+    2. Find the end marker AFTER the start position
+    3. Return everything between (inclusive of both markers)
+
+    Returns None if markers can't be found.
+    """
+    if not start_marker or not markdown:
+        return None
+
+    # Normalize whitespace for matching (markdown may have different spacing)
+    normalized_md = ' '.join(markdown.split())
+    normalized_start = ' '.join(start_marker.strip().split())
+
+    # Find start position (case-sensitive first, then case-insensitive)
+    start_idx = normalized_md.find(normalized_start)
+    if start_idx == -1:
+        # Try case-insensitive
+        start_idx = normalized_md.lower().find(normalized_start.lower())
+    if start_idx == -1:
+        # Try with just the first 30 chars (LLM may have slightly mangled the end)
+        short_start = normalized_start[:30]
+        start_idx = normalized_md.find(short_start)
+        if start_idx == -1:
+            start_idx = normalized_md.lower().find(short_start.lower())
+    if start_idx == -1:
+        return None
+
+    # Find end position
+    if end_marker and end_marker.strip():
+        normalized_end = ' '.join(end_marker.strip().split())
+        end_idx = normalized_md.find(normalized_end, start_idx + len(normalized_start))
+        if end_idx == -1:
+            end_idx = normalized_md.lower().find(normalized_end.lower(), start_idx)
+        if end_idx == -1:
+            # Try with just the last 30 chars
+            short_end = normalized_end[-30:]
+            end_idx = normalized_md.find(short_end, start_idx)
+            if end_idx == -1:
+                end_idx = normalized_md.lower().find(short_end.lower(), start_idx)
+        if end_idx != -1:
+            return normalized_md[start_idx:end_idx + len(normalized_end)].strip()
+
+    # Fallback: if end marker not found, take text from start to next double-newline
+    # or up to 2000 chars (reasonable max for a description)
+    remaining = normalized_md[start_idx:start_idx + 2000]
+    return remaining.strip()
+
+
+SOURCE_TYPE_RANK = {"manufacturer": 3, "authorized_distributor": 2, "third_party": 1}
+
+
 def _merge_content_descriptions(
     extractions: List[ContentExtraction],
-    source_urls: List[str]
+    source_urls: List[str],
+    source_types: List[str],
+    product_id: int,
 ) -> ProductDescriptions:
-    """Merge content extractions, preferring longest/most complete content."""
+    """
+    Merge content extractions using marker-based description resolution.
+
+    Instead of using the LLM's (truncated) text output, we:
+    1. Take the start/end markers the LLM identified
+    2. Look up the full text from the cached scraped markdown in the DB
+    3. Prefer official/authorized sources over third-party
+    """
     desc = ProductDescriptions()
 
     if not extractions:
         return desc
 
-    # Short description: prefer first non-empty, or longest
-    short_descs = [(e.short_description, url) for e, url in zip(extractions, source_urls) if e.short_description]
-    if short_descs:
-        best = max(short_descs, key=lambda x: len(x[0]))
-        desc.short_description = EnrichedField(
-            value=best[0], source_url=best[1], confidence="third_party"
-        )
+    # Load cached pages for this product to resolve markers against
+    cached_pages = get_scraped_pages(product_id)
+    url_to_markdown = {p['url']: p['markdown'] for p in cached_pages if p.get('markdown')}
 
-    # Marketing description: prefer longest
-    mktg_descs = [(e.marketing_description, url) for e, url in zip(extractions, source_urls) if e.marketing_description]
-    if mktg_descs:
-        best = max(mktg_descs, key=lambda x: len(x[0]))
-        desc.marketing_description = EnrichedField(
-            value=best[0], source_url=best[1], confidence="third_party"
-        )
+    # Resolve short description — prefer manufacturer > authorized > third_party
+    _resolve_description_field(
+        extractions, source_urls, source_types, url_to_markdown,
+        start_attr="short_description_start",
+        end_attr="short_description_end",
+        target=desc,
+        target_field="short_description",
+    )
+
+    # Resolve marketing description — same preference order
+    _resolve_description_field(
+        extractions, source_urls, source_types, url_to_markdown,
+        start_attr="marketing_description_start",
+        end_attr="marketing_description_end",
+        target=desc,
+        target_field="marketing_description",
+    )
 
     # Features: deduplicate, merge all
     all_features = []
@@ -775,6 +858,52 @@ def _merge_content_descriptions(
     desc.features = all_features
 
     return desc
+
+
+def _resolve_description_field(
+    extractions: List[ContentExtraction],
+    source_urls: List[str],
+    source_types: List[str],
+    url_to_markdown: dict[str, str],
+    start_attr: str,
+    end_attr: str,
+    target: ProductDescriptions,
+    target_field: str,
+) -> None:
+    """
+    Resolve a single description field from markers + cached markdown.
+    Tries each extraction source in tier order (manufacturer first).
+    """
+    # Build candidates: (extraction, url, source_type) sorted by source tier
+    candidates = list(zip(extractions, source_urls, source_types))
+    candidates.sort(key=lambda x: SOURCE_TYPE_RANK.get(x[2], 0), reverse=True)
+
+    for ext, url, src_type in candidates:
+        start_marker = getattr(ext, start_attr, "")
+        end_marker = getattr(ext, end_attr, "")
+
+        if not start_marker:
+            continue
+
+        # Get the cached markdown for this URL
+        markdown = url_to_markdown.get(url, "")
+        if not markdown:
+            continue
+
+        full_text = _resolve_text_from_markdown(start_marker, end_marker, markdown)
+        if full_text and len(full_text) > 10:
+            confidence = {
+                "manufacturer": "official",
+                "authorized_distributor": "authorized",
+            }.get(src_type, "third_party")
+
+            setattr(target, target_field, EnrichedField(
+                value=full_text,
+                source_url=url,
+                confidence=confidence,
+                notes=f"Resolved from cached {src_type} page via text markers",
+            ))
+            return  # First successful resolution wins (already sorted by tier)
 
 
 def _merge_technical_specs(extractions: List[ContentExtraction]) -> TechnicalData:
