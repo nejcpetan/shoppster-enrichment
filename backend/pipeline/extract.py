@@ -99,6 +99,16 @@ def _extract_all_image_urls(markdown: str, base_url: str = "") -> List[str]:
     return list(all_urls)
 
 
+def _clean_doc_url(url: str) -> str:
+    """Strip trailing garbage from document URLs (spaces, quotes, encoded variants)."""
+    url = url.strip()
+    # Remove trailing URL-encoded spaces and quotes: %20, %22, %27
+    url = re.sub(r'(%20|%22|%27)+$', '', url)
+    # Remove trailing raw spaces, quotes, and common garbage chars
+    url = url.rstrip(' "\'>')
+    return url
+
+
 def _extract_pdf_links(markdown: str, page_url: str) -> List[Dict[str, str]]:
     """
     Extract all PDF/document links from markdown content using regex.
@@ -108,9 +118,10 @@ def _extract_pdf_links(markdown: str, page_url: str) -> List[Dict[str, str]]:
     seen_urls = set()
 
     # Pattern 1: Markdown links to PDFs — [title](url.pdf)
-    md_pdf = re.findall(r'\[([^\]]+)\]\((https?://[^\)]+\.pdf[^\)]*)\)', markdown, re.IGNORECASE)
+    # Stops at spaces/quotes to avoid capturing markdown title attributes: [text](url.pdf "title")
+    md_pdf = re.findall(r'\[([^\]]+)\]\((https?://[^\s\)\"\']+\.pdf(?:\?[^\s\)\"\']*)?)\)', markdown, re.IGNORECASE)
     for title, url in md_pdf:
-        url_clean = url.strip()
+        url_clean = _clean_doc_url(url)
         if url_clean not in seen_urls:
             seen_urls.add(url_clean)
             pdf_links.append({"title": title.strip(), "url": url_clean, "source_page": page_url})
@@ -118,23 +129,36 @@ def _extract_pdf_links(markdown: str, page_url: str) -> List[Dict[str, str]]:
     # Pattern 2: Bare PDF URLs
     bare_pdfs = re.findall(r'(https?://[^\s\)\"\']+\.pdf(?:\?[^\s\)\"\']*)?)', markdown, re.IGNORECASE)
     for url in bare_pdfs:
-        url_clean = url.strip()
+        url_clean = _clean_doc_url(url)
         if url_clean not in seen_urls:
             seen_urls.add(url_clean)
             path = urlparse(url_clean).path
             filename = path.split('/')[-1].replace('.pdf', '').replace('-', ' ').replace('_', ' ')
             pdf_links.append({"title": filename or "Document", "url": url_clean, "source_page": page_url})
 
-    # Pattern 3: Links with download-related text near .pdf
+    # Pattern 3: Links with document-related text — requires document extension or download path
+    # Uses negative lookbehind to skip image markdown ![alt text](url)
+    _DOC_EXTENSIONS = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.zip', '.rar', '.7z'}
+    _IMG_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.ico'}
+
     download_patterns = re.findall(
-        r'\[([^\]]*(?:manual|datasheet|download|specification|certificate|safety|brochure|guide|instruction)[^\]]*)\]\((https?://[^\)]+)\)',
+        r'(?<!\!)\[([^\]]*(?:manual|datasheet|download|specification|certificate|brochure|guide|instruction)[^\]]*)\]\((https?://[^\s\)\"\']+)\)',
         markdown, re.IGNORECASE
     )
     for title, url in download_patterns:
-        url_clean = url.strip()
-        if url_clean not in seen_urls:
-            seen_urls.add(url_clean)
-            pdf_links.append({"title": title.strip(), "url": url_clean, "source_page": page_url})
+        url_clean = _clean_doc_url(url)
+        if url_clean in seen_urls:
+            continue
+        # Check URL extension
+        url_path = urlparse(url_clean).path.lower()
+        url_filename = url_path.split('/')[-1]
+        ext = ('.' + url_filename.rsplit('.', 1)[-1]) if '.' in url_filename else ''
+        if ext in _IMG_EXTENSIONS:
+            continue  # Skip image URLs
+        if ext not in _DOC_EXTENSIONS and not any(k in url_clean.lower() for k in ['download', 'attachment', 'file']):
+            continue  # Must be a document URL or a download link
+        seen_urls.add(url_clean)
+        pdf_links.append({"title": title.strip(), "url": url_clean, "source_page": page_url})
 
     return pdf_links
 
@@ -171,6 +195,63 @@ def _detect_language(title: str, url: str) -> str | None:
     if any(k in combined for k in ['_it', '/it/', '-it', 'italiano', 'italian']):
         return "it"
     return None
+
+
+def _is_image_alt_text(title: str) -> bool:
+    """Reject titles that look like image alt-text descriptions, not document titles."""
+    if len(title) > 80:
+        return True
+    title_lower = title.lower()
+    # Common phrases in image alt-text that never appear in document titles
+    if any(ind in title_lower for ind in [
+        'a person', 'someone', 'showing', 'displays', 'features a',
+        'close-up', 'outdoors', 'holding a', 'uses a', 'wearing'
+    ]):
+        return True
+    # Long sentence-like titles (12+ spaces) are almost certainly alt-text
+    if title.count(' ') > 12:
+        return True
+    return False
+
+
+# Source tier ranking for document dedup (higher = prefer)
+_SOURCE_DOC_RANK = {"manufacturer": 3, "authorized_distributor": 2, "third_party": 1}
+
+# Document type priority for capping (lower number = keep first)
+_DOC_TYPE_PRIORITY = {
+    "manual": 1, "datasheet": 2, "certificate": 3, "warranty": 4,
+    "safety": 5, "brochure": 6, "other": 7
+}
+
+
+def _deduplicate_documents(
+    pdf_links: List[Dict[str, str]],
+    source_type_by_url: Dict[str, str],
+) -> List[Dict[str, str]]:
+    """Deduplicate documents by normalized filename. Prefer higher-tier sources."""
+    groups: Dict[str, List[Dict[str, str]]] = {}
+    for pdf in pdf_links:
+        url = pdf["url"]
+        path = urlparse(url).path
+        filename = path.split('/')[-1].lower().strip()
+        # Normalize: remove version hashes, long numeric suffixes
+        norm = re.sub(r'[_-]v?\d{6,}', '', filename)
+        key = norm or url  # Fallback to full URL if no filename
+
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(pdf)
+
+    deduped = []
+    for _key, candidates in groups.items():
+        best = max(
+            candidates,
+            key=lambda c: _SOURCE_DOC_RANK.get(
+                source_type_by_url.get(c["source_page"], ""), 0
+            ),
+        )
+        deduped.append(best)
+    return deduped
 
 
 def _shorten_url(url: str, max_len: int = 40) -> str:
@@ -246,6 +327,7 @@ async def extract_node(state: dict) -> dict:
     content_source_types: List[str] = []  # Track source tier for description preference
     all_discovered_images: List[str] = []
     all_pdf_links: List[Dict[str, str]] = []
+    source_type_by_url: Dict[str, str] = {}  # Maps page URL → source type for doc dedup
     fc_api_key = os.getenv("FIRECRAWL_API_KEY")
 
     if not fc_api_key:
@@ -262,6 +344,7 @@ async def extract_node(state: dict) -> dict:
     for result in urls_to_process:
         url = result['url']
         source_type = result['source_type']
+        source_type_by_url[url] = source_type
 
         try:
             logger.info(f"[Product {product_id}]   Scraping {_shorten_url(url)} ({source_type})...")
@@ -511,6 +594,7 @@ RULES:
 
         for result in urls_to_cache_only:
             tp_url = result['url']
+            source_type_by_url[tp_url] = 'third_party'
             try:
                 scraped = firecrawl.scrape(tp_url, formats=['markdown'])
 
@@ -570,28 +654,43 @@ RULES:
 
     # ── Process PDFs/Documents ────────────────────────────────────────────
     update_step(product_id, "extracting", "Processing document links...")
+
+    # Step 1: Filter out image alt-text entries
+    filtered_pdfs = [pdf for pdf in all_pdf_links if not _is_image_alt_text(pdf["title"])]
+    if len(filtered_pdfs) < len(all_pdf_links):
+        logger.info(
+            f"[Product {product_id}]   Filtered {len(all_pdf_links) - len(filtered_pdfs)} "
+            f"image alt-text entries from document list"
+        )
+
+    # Step 2: Cross-page dedup by normalized filename (prefer manufacturer sources)
+    deduped_pdfs = _deduplicate_documents(filtered_pdfs, source_type_by_url)
+
+    # Step 3: Build document objects
     documents = []
-    seen_doc_urls = set()
-    for pdf in all_pdf_links:
-        if pdf["url"] not in seen_doc_urls:
-            seen_doc_urls.add(pdf["url"])
-            doc_type = _classify_document_type(pdf["title"], pdf["url"])
-            language = _detect_language(pdf["title"], pdf["url"])
-            documents.append(ProductDocument(
-                title=pdf["title"],
-                url=pdf["url"],
-                doc_type=doc_type,
-                language=language,
-                source_page=pdf["source_page"]
-            ))
+    for pdf in deduped_pdfs:
+        doc_type = _classify_document_type(pdf["title"], pdf["url"])
+        language = _detect_language(pdf["title"], pdf["url"])
+        documents.append(ProductDocument(
+            title=pdf["title"],
+            url=pdf["url"],
+            doc_type=doc_type,
+            language=language,
+            source_page=pdf["source_page"]
+        ))
+
+    # Step 4: Cap at 15 documents, prioritizing by type
+    documents.sort(key=lambda d: _DOC_TYPE_PRIORITY.get(d.doc_type, 99))
+    documents = documents[:15]
+
     merged.documents = ProductDocuments(documents=documents)
 
     if documents:
-        logger.info(f"[Product {product_id}]   Found {len(documents)} documents/PDFs")
+        logger.info(f"[Product {product_id}]   Found {len(documents)} documents/PDFs (from {len(all_pdf_links)} raw links)")
         append_log(product_id, {
             "timestamp": datetime.now().isoformat(),
             "phase": "extract", "step": "documents", "status": "success",
-            "details": f"Found {len(documents)} documents: {', '.join(d.doc_type for d in documents)}"
+            "details": f"Found {len(documents)} documents (filtered from {len(all_pdf_links)} raw): {', '.join(d.doc_type for d in documents)}"
         })
 
     # ── Deduplicate and store images ──────────────────────────────────────
@@ -805,6 +904,49 @@ def _resolve_text_from_markdown(
 SOURCE_TYPE_RANK = {"manufacturer": 3, "authorized_distributor": 2, "third_party": 1}
 
 
+def _clean_resolved_text(text: str) -> str:
+    """
+    Strip markdown formatting and page junk from text resolved via markers.
+
+    Strategy: strip markdown syntax, then detect where page chrome begins
+    (video player, caption settings, nav junk) and truncate there.
+    """
+    # 1. Remove markdown images: ![alt text](url) — also handles escaped \![
+    text = re.sub(r'\\?!\[[^\]]*\]\([^\)]*\)', '', text)
+    # 2. Remove markdown links but keep the link text: [text](url) → text
+    text = re.sub(r'\[([^\]]*)\]\([^\)]*\)', r'\1', text)
+    # 3. Remove bare URLs
+    text = re.sub(r'https?://\S+', '', text)
+    # 4. Remove "View more" and similar CTA fragments
+    text = re.sub(r'\b(?:View more|Read more|Show more|Learn more)\b', '', text, flags=re.IGNORECASE)
+    # 5. Collapse whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    # 6. Truncate at junk signals — find where page chrome begins
+    junk_signals = [
+        r'\d+ seconds? of \d+ seconds?',       # Video player
+        r'Volume \d+%',                          # Video player
+        r'Keyboard Shortcuts',                   # Video player shortcuts block
+        r'Play/Pause',                           # Video player controls
+        r'Captions On/Off',                      # Video player controls
+        r'Fullscreen/Exit',                      # Video player controls
+        r'Font Color\s*(?:White|Black)',          # Caption settings
+        r'Background Opacity',                   # Caption settings
+        r'(?:White|Black|Red|Green|Blue|Yellow|Magenta|Cyan){3,}',  # Color picker
+        r'(?:\d{2,3}%){3,}',                     # Repeated percentages
+        r'Press shift question mark',            # Accessibility prompt
+        r'Transcription\w*\s*Audio Description', # Media settings
+    ]
+    junk_match = re.search('|'.join(junk_signals), text, re.IGNORECASE)
+    if junk_match:
+        text = text[:junk_match.start()].strip()
+
+    # 7. Clean up trailing artifacts
+    text = text.rstrip(' -\u2013\u2014\u00b7\u2022|\\/')
+
+    return text
+
+
 def _merge_content_descriptions(
     extractions: List[ContentExtraction],
     source_urls: List[str],
@@ -892,13 +1034,18 @@ def _resolve_description_field(
 
         full_text = _resolve_text_from_markdown(start_marker, end_marker, markdown)
         if full_text and len(full_text) > 10:
+            # Clean page junk (images, video player UI, nav elements)
+            cleaned = _clean_resolved_text(full_text)
+            if not cleaned or len(cleaned) < 10:
+                continue  # Cleaning removed everything — try next source
+
             confidence = {
                 "manufacturer": "official",
                 "authorized_distributor": "authorized",
             }.get(src_type, "third_party")
 
             setattr(target, target_field, EnrichedField(
-                value=full_text,
+                value=cleaned,
                 source_url=url,
                 confidence=confidence,
                 notes=f"Resolved from cached {src_type} page via text markers",
