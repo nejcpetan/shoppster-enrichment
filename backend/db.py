@@ -39,6 +39,40 @@ def init_db():
         )
     """)
 
+    # Brand COO cache — stores brand → country of origin lookups to avoid
+    # redundant Tavily + Claude calls for repeat brands.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS brand_coo_cache (
+            brand TEXT PRIMARY KEY COLLATE NOCASE,
+            country_of_origin TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            source_url TEXT,
+            cached_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Scraped pages cache — stores raw markdown from Firecrawl scrapes
+    # so the gap_fill node can extract missing data without re-scraping.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS scraped_pages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            markdown TEXT,
+            markdown_length INTEGER DEFAULT 0,
+            scrape_success INTEGER DEFAULT 1,
+            extracted INTEGER DEFAULT 0,
+            gap_filled INTEGER DEFAULT 0,
+            scraped_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(product_id, url)
+        )
+    """)
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_scraped_pages_product
+        ON scraped_pages(product_id, source_type)
+    """)
+
     # Migration: add current_step column if it doesn't exist (for existing DBs)
     # Migrations for existing DBs
     for col in ['current_step TEXT', 'cost_data TEXT']:
@@ -96,6 +130,64 @@ def save_cost_data(product_id: int, cost_summary: dict):
         "UPDATE products SET cost_data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         (json.dumps(cost_summary), product_id)
     )
+    conn.commit()
+    conn.close()
+
+
+def save_scraped_page(product_id: int, url: str, source_type: str, markdown: str | None, success: bool = True):
+    """Cache a scraped page's markdown for potential gap-fill use."""
+    conn = get_db_connection()
+    conn.execute("""
+        INSERT OR REPLACE INTO scraped_pages
+        (product_id, url, source_type, markdown, markdown_length, scrape_success, scraped_at)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, (product_id, url, source_type, markdown, len(markdown) if markdown else 0, 1 if success else 0))
+    conn.commit()
+    conn.close()
+
+
+def get_scraped_pages(product_id: int, source_type: str | None = None, only_unextracted: bool = False) -> list[dict]:
+    """Retrieve cached scraped pages for a product."""
+    conn = get_db_connection()
+    query = "SELECT * FROM scraped_pages WHERE product_id = ? AND scrape_success = 1"
+    params: list = [product_id]
+    if source_type:
+        query += " AND source_type = ?"
+        params.append(source_type)
+    if only_unextracted:
+        query += " AND extracted = 0 AND gap_filled = 0"
+    query += " ORDER BY id ASC"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def mark_page_extracted(product_id: int, url: str):
+    """Mark a scraped page as having gone through main extraction."""
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE scraped_pages SET extracted = 1 WHERE product_id = ? AND url = ?",
+        (product_id, url)
+    )
+    conn.commit()
+    conn.close()
+
+
+def mark_page_gap_filled(product_id: int, url: str):
+    """Mark a scraped page as used for gap filling."""
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE scraped_pages SET gap_filled = 1 WHERE product_id = ? AND url = ?",
+        (product_id, url)
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_scraped_pages(product_id: int):
+    """Delete all cached scraped pages for a product (used on reset)."""
+    conn = get_db_connection()
+    conn.execute("DELETE FROM scraped_pages WHERE product_id = ?", (product_id,))
     conn.commit()
     conn.close()
 

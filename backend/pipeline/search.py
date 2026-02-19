@@ -44,9 +44,10 @@ async def search_node(state: dict) -> dict:
     brand = classification.get('brand')
     model = classification.get('model_number', '')
     product_type = classification.get('product_type', '')
+    manufacturer_domain = classification.get('manufacturer_domain')
     ean = product['ean']
 
-    # Build search queries
+    # Build general search queries
     queries = []
     if brand and model:
         queries.append(f"{brand} {model} specifications")
@@ -57,9 +58,14 @@ async def search_node(state: dict) -> dict:
         queries.append(f"{product['product_name']} {ean}")
     queries.append(f"{ean}")  # EAN-only fallback
 
+    # Manufacturer base query (used in Phase 1)
+    mfr_query = f"{brand} {model}".strip() if (brand and model) else (brand or product['product_name'])
+
     # Determine search provider
     search_provider = os.getenv("SEARCH_PROVIDER", "tavily").lower()
-    
+
+    all_results = []
+
     # ─── Provider: Tavily ─────────────────────────────────────────────────────
     if search_provider == "tavily":
         tavily_key = os.getenv("TAVILY_API_KEY")
@@ -67,18 +73,50 @@ async def search_node(state: dict) -> dict:
             return {"error": "TAVILY_API_KEY not found"}
 
         client = TavilyClient(api_key=tavily_key)
-        all_results = []
-        
-        for q in queries[:3]:
+
+        # ── Phase 1: Manufacturer-targeted search ──────────────────────────
+        if manufacturer_domain:
+            update_step(product_id, "searching", f"Searching manufacturer site: {manufacturer_domain}...")
+            try:
+                logger.info(f"[Product {product_id}]   Phase 1 (manufacturer): '{mfr_query}' on {manufacturer_domain}")
+                mfr_response = client.search(
+                    query=mfr_query,
+                    max_results=5,
+                    include_domains=[manufacturer_domain]
+                )
+                mfr_results = mfr_response.get('results', [])
+                all_results.extend(mfr_results)
+
+                if cost_tracker:
+                    cost_tracker.add_api_call("tavily", credits=1, phase="search_manufacturer")
+
+                append_log(product_id, {
+                    "timestamp": datetime.now().isoformat(),
+                    "phase": "search", "step": "tavily_manufacturer", "status": "success",
+                    "details": f"Manufacturer search on {manufacturer_domain} → {len(mfr_results)} results",
+                    "credits_used": {"tavily": 1}
+                })
+                logger.info(f"[Product {product_id}]   → {len(mfr_results)} manufacturer results")
+            except Exception as e:
+                logger.warning(f"[Product {product_id}]   Manufacturer search failed ({manufacturer_domain}): {e}")
+                append_log(product_id, {
+                    "timestamp": datetime.now().isoformat(),
+                    "phase": "search", "step": "tavily_manufacturer", "status": "warning",
+                    "details": f"Manufacturer search failed: {str(e)}"
+                })
+
+        # ── Phase 2: General search ────────────────────────────────────────
+        # Reduce general queries if Phase 1 already found results
+        max_general_queries = 2 if (manufacturer_domain and all_results) else 3
+        for q in queries[:max_general_queries]:
             update_step(product_id, "searching", f"Searching (Tavily): {q[:50]}...")
             try:
-                logger.info(f"[Product {product_id}]   Tavily search: '{q}'")
+                logger.info(f"[Product {product_id}]   Phase 2 (general): '{q}'")
                 response = client.search(query=q, max_results=7)
                 num_results = len(response.get('results', []))
                 logger.info(f"[Product {product_id}]   → {num_results} results")
                 all_results.extend(response.get('results', []))
-                
-                # Track Tavily cost
+
                 if cost_tracker:
                     cost_tracker.add_api_call("tavily", credits=1, phase="search")
 
@@ -89,7 +127,7 @@ async def search_node(state: dict) -> dict:
                     "credits_used": {"tavily": 1}
                 })
 
-                if num_results >= 3:
+                if len(all_results) >= 6:
                     break
             except Exception as e:
                 logger.warning(f"[Product {product_id}]   Search failed for '{q}': {e}")
@@ -104,64 +142,78 @@ async def search_node(state: dict) -> dict:
         fc_api_key = os.getenv("FIRECRAWL_API_KEY")
         if not fc_api_key:
             return {"error": "FIRECRAWL_API_KEY not found"}
-        
+
         from firecrawl import FirecrawlApp
         app = FirecrawlApp(api_key=fc_api_key)
-        all_results = []
 
-        for q in queries[:3]:
+        def _parse_firecrawl_results(response) -> list:
+            """Normalize Firecrawl search response to list of {url, title, content}."""
+            def get_val(obj, key, default=None):
+                if isinstance(obj, dict):
+                    return obj.get(key, default)
+                return getattr(obj, key, default)
+
+            raw_items = []
+            if hasattr(response, 'web'):
+                raw_items = response.web
+            elif isinstance(response, dict):
+                if 'data' in response and isinstance(response['data'], dict):
+                    raw_items = response['data'].get('web', [])
+                else:
+                    raw_items = response.get('web', [])
+            if not raw_items and hasattr(response, 'data'):
+                data_obj = response.data
+                if hasattr(data_obj, 'web'):
+                    raw_items = data_obj.web
+
+            results = []
+            for item in raw_items:
+                url = get_val(item, 'url')
+                title = get_val(item, 'title', 'No title')
+                desc = get_val(item, 'description') or get_val(item, 'markdown') or ''
+                results.append({'url': url, 'title': title, 'content': desc[:200]})
+            return results
+
+        # ── Phase 1: Manufacturer-targeted search ──────────────────────────
+        if manufacturer_domain:
+            update_step(product_id, "searching", f"Searching manufacturer site: {manufacturer_domain}...")
+            try:
+                site_query = f"site:{manufacturer_domain} {mfr_query}"
+                logger.info(f"[Product {product_id}]   Phase 1 (manufacturer): '{site_query}'")
+                mfr_response = app.search(site_query, limit=5)
+                mfr_results = _parse_firecrawl_results(mfr_response)
+                all_results.extend(mfr_results)
+
+                if cost_tracker:
+                    cost_tracker.add_api_call("firecrawl", credits=2, phase="search_manufacturer")
+
+                append_log(product_id, {
+                    "timestamp": datetime.now().isoformat(),
+                    "phase": "search", "step": "firecrawl_manufacturer", "status": "success",
+                    "details": f"Manufacturer search on {manufacturer_domain} → {len(mfr_results)} results",
+                    "credits_used": {"firecrawl": 2}
+                })
+                logger.info(f"[Product {product_id}]   → {len(mfr_results)} manufacturer results")
+            except Exception as e:
+                logger.warning(f"[Product {product_id}]   Manufacturer search failed ({manufacturer_domain}): {e}")
+                append_log(product_id, {
+                    "timestamp": datetime.now().isoformat(),
+                    "phase": "search", "step": "firecrawl_manufacturer", "status": "warning",
+                    "details": f"Manufacturer search failed: {str(e)}"
+                })
+
+        # ── Phase 2: General search ────────────────────────────────────────
+        max_general_queries = 2 if (manufacturer_domain and all_results) else 3
+        for q in queries[:max_general_queries]:
             update_step(product_id, "searching", f"Searching (Firecrawl): {q[:50]}...")
             try:
-                logger.info(f"[Product {product_id}]   Firecrawl search: '{q}'")
-                
-                # Check if FirecrawlApp uses search(query, limit=7) or params=
-                # SDK documentation says params are passed as keyword arguments
+                logger.info(f"[Product {product_id}]   Phase 2 (general): '{q}'")
                 response = app.search(q, limit=7)
-                
-                # Normalize results to match Tavily structure
-                results_list = []
-                
-                # Handling response structure:
-                # Firecrawl SDK v1 returns an object (SearchData) with 'web' attribute containing objects (SearchResultWeb)
-                # Helper to get attribute or dict key
-                def get_val(obj, key, default=None):
-                    if isinstance(obj, dict):
-                        return obj.get(key, default)
-                    return getattr(obj, key, default)
-
-                raw_items = []
-                if hasattr(response, 'web'):
-                    raw_items = response.web
-                elif isinstance(response, dict):
-                    if 'data' in response and isinstance(response['data'], dict):
-                        raw_items = response['data'].get('web', [])
-                    else:
-                        raw_items = response.get('web', [])
-                
-                if not raw_items and hasattr(response, 'data'):
-                     # Fallback for some SDK versions
-                     data_obj = response.data
-                     if hasattr(data_obj, 'web'):
-                         raw_items = data_obj.web
-
-                logger.info(f"[Product {product_id}]   → {len(raw_items)} raw results found")
-
-                for item in raw_items:
-                    url = get_val(item, 'url')
-                    title = get_val(item, 'title', 'No title')
-                    desc = get_val(item, 'description') or get_val(item, 'markdown') or ''
-                    
-                    results_list.append({
-                        'url': url,
-                        'title': title,
-                        'content': desc[:200]
-                    })
-                
+                results_list = _parse_firecrawl_results(response)
                 num_results = len(results_list)
                 logger.info(f"[Product {product_id}]   → {num_results} results")
                 all_results.extend(results_list)
 
-                # Track Firecrawl cost (2 credits per search)
                 if cost_tracker:
                     cost_tracker.add_api_call("firecrawl", credits=2, phase="search_query")
 
@@ -169,10 +221,10 @@ async def search_node(state: dict) -> dict:
                     "timestamp": datetime.now().isoformat(),
                     "phase": "search", "step": "firecrawl_search", "status": "success",
                     "details": f"Query '{q}' → {num_results} results",
-                    "credits_used": {"firecrawl": 2} # 2 credits per search
+                    "credits_used": {"firecrawl": 2}
                 })
 
-                if num_results >= 3:
+                if len(all_results) >= 6:
                     break
 
             except Exception as e:
@@ -225,8 +277,9 @@ For each URL, determine the source_type:
 
 Return a JSON array. Sort: manufacturer first, then authorized_distributor, then third_party. Exclude irrelevant. Limit to top 5 URLs."""
 
+    mfr_hint = f"\nKnown manufacturer domain: {manufacturer_domain}" if manufacturer_domain else ""
     user_prompt = f"""Product: {brand} {model} (EAN: {ean})
-Product type: {product_type}
+Product type: {product_type}{mfr_hint}
 
 Search results to classify:
 """
@@ -242,11 +295,13 @@ Search results to classify:
             return_usage=True
         )
 
-        # Track Claude cost
+        # Track Claude cost (with cache metrics)
         if cost_tracker:
             cost_tracker.add_llm_call(
                 usage["model"], usage["input_tokens"], usage["output_tokens"],
-                phase="search"
+                phase="search",
+                cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
+                cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
             )
 
         type_counts = {}

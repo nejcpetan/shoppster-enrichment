@@ -24,7 +24,7 @@ from urllib.parse import urljoin, urlparse
 from firecrawl import FirecrawlApp
 from pydantic import BaseModel
 from tavily import TavilyClient
-from db import get_db_connection, update_step, append_log
+from db import get_db_connection, update_step, append_log, save_scraped_page, mark_page_extracted
 from utils.llm import classify_with_schema, get_raw_client, HAIKU_MODEL
 from schemas import (
     EnrichedProduct, EnrichedField, ProductClassification,
@@ -215,11 +215,30 @@ async def extract_node(state: dict) -> dict:
     search_results = json.loads(product['search_result'])
     classification = ProductClassification.model_validate_json(product['classification_result'])
 
-    # Get top URLs (exclude irrelevant)
-    urls_to_process = [
-        r for r in search_results['results']
-        if r['source_type'] != 'irrelevant'
-    ][:3]
+    # Tier-based URL selection: manufacturer first, then authorized distributors.
+    # Third-party sites are scraped and cached but NOT extracted in this pass —
+    # the gap_fill node will extract from them later if critical data is missing.
+    all_results_filtered = search_results.get('results', [])
+    manufacturer_urls = [r for r in all_results_filtered if r['source_type'] == 'manufacturer']
+    authorized_urls = [r for r in all_results_filtered if r['source_type'] == 'authorized_distributor']
+    third_party_urls = [r for r in all_results_filtered if r['source_type'] == 'third_party']
+
+    # Main extraction targets (LLM calls)
+    urls_to_process = manufacturer_urls[:2] + authorized_urls[:3]
+
+    # Scrape-only targets (cached for gap fill, no LLM calls)
+    urls_to_cache_only = third_party_urls[:3]
+
+    if not urls_to_process:
+        # Fallback: if classification was poor and nothing is manufacturer/authorized, take top 3
+        urls_to_process = [r for r in all_results_filtered if r['source_type'] != 'irrelevant'][:3]
+        urls_to_cache_only = []  # Already taking from all tiers
+
+    logger.info(
+        f"[Product {product_id}]   URLs to process: "
+        f"{len(manufacturer_urls[:2])} manufacturer + {len(authorized_urls[:3])} authorized "
+        f"= {len(urls_to_process)} total, {len(urls_to_cache_only)} third-party to cache"
+    )
 
     dimension_extractions: List[DimensionsExtraction] = []
     content_extractions: List[ContentExtraction] = []
@@ -259,6 +278,9 @@ async def extract_node(state: dict) -> dict:
             elif isinstance(scraped, dict):
                 markdown = scraped.get('markdown', '')[:40000]
 
+            # Cache the scraped page for potential gap-fill use
+            save_scraped_page(product_id, url, source_type, markdown if markdown else None, success=bool(markdown))
+
             if not markdown:
                 append_log(product_id, {
                     "timestamp": datetime.now().isoformat(),
@@ -275,15 +297,32 @@ async def extract_node(state: dict) -> dict:
             page_pdfs = _extract_pdf_links(markdown, url)
             all_pdf_links.extend(page_pdfs)
 
-            # Determine confidence level based on source type
-            confidence_level = "official" if source_type == "manufacturer" else "third_party"
+            # Determine confidence level based on source type (three-tier)
+            if source_type == "manufacturer":
+                confidence_level = "official"
+            elif source_type == "authorized_distributor":
+                confidence_level = "authorized"
+            else:
+                confidence_level = "third_party"
+
+            # Shared system preamble for both passes (must be identical for cache hit)
+            # The scraped markdown goes into cached_content, shared between Pass 1 and Pass 2.
+            # Pass-specific instructions go into the user message.
+            extraction_preamble = f"""You are a product data extraction assistant analyzing a scraped product page.
+Source URL: {url}
+Source type: {source_type} (confidence level: {confidence_level})
+Product: {classification.brand} {classification.model_number} (EAN: {product['ean']})
+
+The full page content is provided below. Follow the extraction instructions in the user message."""
+
+            # Use the same truncation for both passes so the cached prefix matches exactly
+            page_content = markdown[:30000]
 
             # ── Pass 1: Structured Dimensions ─────────────────────────────
             logger.info(f"[Product {product_id}]   Pass 1: Structured extraction from {_shorten_url(url)}...")
             update_step(product_id, "extracting", f"Pass 1: Dimensions from {_shorten_url(url)}...")
 
-            pass1_system = f"""You are extracting PHYSICAL PRODUCT DATA from a product page.
-Source type: {source_type} → set confidence to "{confidence_level}".
+            pass1_user = f"""Extract PHYSICAL PRODUCT DATA from the page content above.
 
 EXTRACT NET (product itself) AND PACKAGED (with box/packaging) dimensions separately.
 Many product pages list both — look for labels like "Net weight", "Package weight", "Brutto/Netto",
@@ -301,31 +340,25 @@ Also extract:
 - Extract the highest-resolution PRODUCT IMAGE URL (not PDFs, icons, or logos).
 - image_urls: List ALL product image URLs found on the page."""
 
-            pass1_user = f"""Extract dimensions, weight, and physical data from this page.
-
-Product: {classification.brand} {classification.model_number}
-EAN: {product['ean']}
-Source URL: {url}
-Source type: {source_type}
-
-Page content:
-{markdown[:25000]}"""
-
             try:
                 dim_extraction, usage = classify_with_schema(
                     prompt=pass1_user,
-                    system=pass1_system,
+                    system=extraction_preamble,
                     schema=DimensionsExtraction,
                     model="haiku",
-                    return_usage=True
+                    return_usage=True,
+                    cached_content=page_content,
+                    max_tokens=4096,
                 )
                 dimension_extractions.append(dim_extraction)
 
-                # Track cost
+                # Track cost (with cache metrics)
                 if cost_tracker:
                     cost_tracker.add_llm_call(
                         usage["model"], usage["input_tokens"], usage["output_tokens"],
-                        phase="extract_pass1"
+                        phase="extract_pass1",
+                        cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
+                        cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
                     )
 
                 # Collect LLM-extracted images
@@ -338,7 +371,8 @@ Page content:
                     "timestamp": datetime.now().isoformat(),
                     "phase": "extract", "step": "pass1_structured", "status": "success",
                     "details": f"Pass 1 done for {_shorten_url(url)} ({source_type})",
-                    "credits_used": {"claude_in": usage["input_tokens"], "claude_out": usage["output_tokens"]}
+                    "credits_used": {"claude_in": usage["input_tokens"], "claude_out": usage["output_tokens"],
+                                     "cache_read": usage.get("cache_read_input_tokens", 0)}
                 })
             except Exception as e:
                 logger.warning(f"[Product {product_id}]   Pass 1 failed for {_shorten_url(url)}: {e}")
@@ -349,12 +383,11 @@ Page content:
                 })
 
             # ── Pass 2: Content Extraction ────────────────────────────────
+            # Uses the same system preamble + page_content as Pass 1 → cache HIT on the markdown
             logger.info(f"[Product {product_id}]   Pass 2: Content extraction from {_shorten_url(url)}...")
             update_step(product_id, "extracting", f"Pass 2: Content from {_shorten_url(url)}...")
 
-            pass2_system = f"""You are extracting marketing and technical content from a product page.
-
-EXTRACT THE FOLLOWING:
+            pass2_user = f"""Extract marketing and technical content from the page content above.
 
 1. SHORT DESCRIPTION:
    The brief product summary, usually 1-2 sentences at the top of the product page.
@@ -385,31 +418,26 @@ RULES:
 - Keep original language text (Slovenian, German, English, etc.) — do NOT translate.
 - If a field is not present on the page, leave it empty."""
 
-            pass2_user = f"""Extract descriptions, features, technical specs, and warranty from this page.
-
-Product: {classification.brand} {classification.model_number}
-EAN: {product['ean']}
-Source URL: {url}
-
-Page content:
-{markdown[:30000]}"""
-
             try:
                 content_extraction, usage = classify_with_schema(
                     prompt=pass2_user,
-                    system=pass2_system,
+                    system=extraction_preamble,
                     schema=ContentExtraction,
                     model="haiku",
-                    return_usage=True
+                    return_usage=True,
+                    cached_content=page_content,
+                    max_tokens=8192,  # ContentExtraction with many features/specs can be large
                 )
                 content_extractions.append(content_extraction)
                 content_source_urls.append(url)
 
-                # Track cost
+                # Track cost (with cache metrics)
                 if cost_tracker:
                     cost_tracker.add_llm_call(
                         usage["model"], usage["input_tokens"], usage["output_tokens"],
-                        phase="extract_pass2"
+                        phase="extract_pass2",
+                        cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
+                        cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
                     )
 
                 spec_count = len(content_extraction.technical_specs)
@@ -420,7 +448,8 @@ Page content:
                     "timestamp": datetime.now().isoformat(),
                     "phase": "extract", "step": "pass2_content", "status": "success",
                     "details": f"Pass 2 done for {_shorten_url(url)}: {spec_count} tech specs, {feat_count} features, warranty={bool(content_extraction.warranty_duration)}",
-                    "credits_used": {"claude_in": usage["input_tokens"], "claude_out": usage["output_tokens"]}
+                    "credits_used": {"claude_in": usage["input_tokens"], "claude_out": usage["output_tokens"],
+                                     "cache_read": usage.get("cache_read_input_tokens", 0)}
                 })
             except Exception as e:
                 logger.warning(f"[Product {product_id}]   Pass 2 failed for {_shorten_url(url)}: {e}")
@@ -429,6 +458,9 @@ Page content:
                     "phase": "extract", "step": "pass2_content", "status": "error",
                     "details": f"Pass 2 failed for {_shorten_url(url)}: {e}"
                 })
+
+            # Mark page as extracted in cache (even if one pass failed)
+            mark_page_extracted(product_id, url)
 
         except Exception as e:
             logger.warning(f"[Product {product_id}]   Scrape failed for {_shorten_url(url)}: {e}, retrying...")
@@ -462,6 +494,48 @@ Page content:
                     "timestamp": datetime.now().isoformat(),
                     "phase": "extract", "step": "scrape_error", "status": "error",
                     "details": f"Failed {_shorten_url(url)} after retry: {retry_e}"
+                })
+
+    # ── Scrape-only: Cache third-party pages for potential gap fill ─────
+    if urls_to_cache_only:
+        logger.info(f"[Product {product_id}]   Caching {len(urls_to_cache_only)} third-party pages for gap fill...")
+        update_step(product_id, "extracting", f"Caching {len(urls_to_cache_only)} third-party pages...")
+
+        for result in urls_to_cache_only:
+            tp_url = result['url']
+            try:
+                scraped = firecrawl.scrape(tp_url, formats=['markdown'])
+
+                if cost_tracker:
+                    cost_tracker.add_api_call("firecrawl", credits=1, phase="extract_scrape_cache")
+
+                tp_markdown = ''
+                if hasattr(scraped, 'markdown') and scraped.markdown:
+                    tp_markdown = scraped.markdown[:40000]
+                elif isinstance(scraped, dict):
+                    tp_markdown = scraped.get('markdown', '')[:40000]
+
+                save_scraped_page(product_id, tp_url, 'third_party', tp_markdown if tp_markdown else None, success=bool(tp_markdown))
+
+                if tp_markdown:
+                    # Extract images and PDFs from third-party pages (regex, no LLM cost)
+                    page_images = _extract_all_image_urls(tp_markdown, tp_url)
+                    all_discovered_images.extend(page_images)
+                    page_pdfs = _extract_pdf_links(tp_markdown, tp_url)
+                    all_pdf_links.extend(page_pdfs)
+
+                append_log(product_id, {
+                    "timestamp": datetime.now().isoformat(),
+                    "phase": "extract", "step": "scrape_cache", "status": "success" if tp_markdown else "warning",
+                    "details": f"Cached {_shorten_url(tp_url)} ({len(tp_markdown)} chars)" if tp_markdown else f"No content from {_shorten_url(tp_url)}"
+                })
+            except Exception as e:
+                save_scraped_page(product_id, tp_url, 'third_party', None, success=False)
+                logger.warning(f"[Product {product_id}]   Cache scrape failed for {_shorten_url(tp_url)}: {e}")
+                append_log(product_id, {
+                    "timestamp": datetime.now().isoformat(),
+                    "phase": "extract", "step": "scrape_cache", "status": "error",
+                    "details": f"Cache scrape failed for {_shorten_url(tp_url)}: {e}"
                 })
 
     # ── Merge Dimensions ──────────────────────────────────────────────────
@@ -593,30 +667,37 @@ Page content:
 def _pick_best_field(fields: List[EnrichedField]) -> EnrichedField:
     """
     Survivorship logic for a single field across multiple sources.
-    Priority: official > third_party (multi-agree) > third_party (single) > inferred
+    Priority: official > authorized (multi-agree) > authorized (single) > third_party (multi-agree) > third_party > inferred
     """
     candidates = [f for f in fields if f and f.value is not None and f.confidence != 'not_found']
     if not candidates:
         return EnrichedField()
 
     official = [c for c in candidates if c.confidence == 'official']
+    authorized = [c for c in candidates if c.confidence == 'authorized']
     third_party = [c for c in candidates if c.confidence == 'third_party']
     inferred = [c for c in candidates if c.confidence == 'inferred']
 
-    if official:
-        return official[0]
-    elif third_party:
-        if len(third_party) > 1:
-            values = set(str(c.value) for c in third_party)
+    def _pick_from_tier(tier: list) -> EnrichedField:
+        """Pick best from a tier: prefer multi-source agreement, otherwise take first."""
+        if len(tier) > 1:
+            values = set(str(c.value) for c in tier)
             if len(values) == 1:
-                best = third_party[0].model_copy()
-                best.notes = f"Confirmed by {len(third_party)} sources"
+                best = tier[0].model_copy()
+                best.notes = f"Confirmed by {len(tier)} sources"
                 return best
             else:
-                best = third_party[0].model_copy()
+                best = tier[0].model_copy()
                 best.notes = f"Sources disagree: {', '.join(values)}"
                 return best
-        return third_party[0]
+        return tier[0]
+
+    if official:
+        return official[0]
+    elif authorized:
+        return _pick_from_tier(authorized)
+    elif third_party:
+        return _pick_from_tier(third_party)
     elif inferred:
         return inferred[0]
     return EnrichedField()
@@ -703,6 +784,7 @@ def _merge_technical_specs(extractions: List[ContentExtraction]) -> TechnicalDat
     if not extractions:
         return tech
 
+    CONFIDENCE_RANK = {"official": 3, "authorized": 2, "third_party": 1, "inferred": 0, "not_found": -1}
     seen_specs = {}  # name_lower -> TechnicalSpec
     for e in extractions:
         for spec in e.technical_specs:
@@ -710,9 +792,9 @@ def _merge_technical_specs(extractions: List[ContentExtraction]) -> TechnicalDat
             if key not in seen_specs:
                 seen_specs[key] = spec
             else:
-                # Prefer official confidence
+                # Prefer higher-confidence sources
                 existing = seen_specs[key]
-                if spec.confidence == "official" and existing.confidence != "official":
+                if CONFIDENCE_RANK.get(spec.confidence, 0) > CONFIDENCE_RANK.get(existing.confidence, 0):
                     seen_specs[key] = spec
 
     tech.specs = list(seen_specs.values())
@@ -916,10 +998,35 @@ def _fill_color_from_name(product_name: str, product_id: int) -> EnrichedField |
 
 
 async def _fill_country_of_origin(brand: str | None, ean: str, product_id: int, cost_tracker=None) -> EnrichedField | None:
-    """Specialized search for country of origin."""
+    """Specialized search for country of origin. Checks brand_coo_cache first."""
     if not brand:
         return None
 
+    # ── Check brand COO cache first ──────────────────────────────────────
+    try:
+        conn = get_db_connection()
+        cached = conn.execute(
+            "SELECT country_of_origin, confidence FROM brand_coo_cache WHERE brand = ?",
+            (brand,)
+        ).fetchone()
+        conn.close()
+
+        if cached:
+            logger.info(f"[Product {product_id}]   COO cache HIT: {brand} → {cached['country_of_origin']}")
+            append_log(product_id, {
+                "timestamp": datetime.now().isoformat(),
+                "phase": "extract", "step": "country_of_origin_cache", "status": "success",
+                "details": f"COO from cache: {brand} → {cached['country_of_origin']} ({cached['confidence']})"
+            })
+            return EnrichedField(
+                value=cached['country_of_origin'],
+                confidence=cached['confidence'],
+                notes=f"From brand COO cache (brand: {brand})",
+            )
+    except Exception as cache_err:
+        logger.warning(f"[Product {product_id}]   COO cache lookup failed: {cache_err}")
+
+    # ── Cache miss — search via Tavily + Claude ──────────────────────────
     tavily_key = os.getenv("TAVILY_API_KEY")
     if not tavily_key:
         return None
@@ -953,11 +1060,13 @@ If you cannot determine, return value as null."""
             return_usage=True
         )
 
-        # Track Claude cost
+        # Track Claude cost (with cache metrics)
         if cost_tracker:
             cost_tracker.add_llm_call(
                 usage["model"], usage["input_tokens"], usage["output_tokens"],
-                phase="extract_coo"
+                phase="extract_coo",
+                cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
+                cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
             )
 
         append_log(product_id, {
@@ -966,6 +1075,20 @@ If you cannot determine, return value as null."""
             "details": f"COO: {result.value} ({result.confidence})",
             "credits_used": {"tavily": 1, "claude_in": usage["input_tokens"], "claude_out": usage["output_tokens"]}
         })
+
+        # ── Write to brand COO cache ─────────────────────────────────────
+        if result.value:
+            try:
+                conn = get_db_connection()
+                conn.execute(
+                    "INSERT OR REPLACE INTO brand_coo_cache (brand, country_of_origin, confidence) VALUES (?, ?, ?)",
+                    (brand, result.value, result.confidence)
+                )
+                conn.commit()
+                conn.close()
+                logger.info(f"[Product {product_id}]   COO cached: {brand} → {result.value}")
+            except Exception as cache_write_err:
+                logger.warning(f"[Product {product_id}]   COO cache write failed: {cache_write_err}")
 
         return result if result.value else None
 

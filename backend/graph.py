@@ -1,7 +1,10 @@
 """
-LangGraph Enrichment Pipeline — v2
+LangGraph Enrichment Pipeline — v4
 
-State machine: triage → [ean_lookup?] → search → extract → validate → save_costs
+State machine: triage → [ean_lookup?] → search → extract → gap_fill → validate → save_costs
+
+Gap fill runs BEFORE validation so that validation sees the complete data
+(including any fields recovered from cached third-party pages).
 
 Each node reads/writes to the SQLite DB directly and updates `current_step`
 for real-time UI feedback. State carries flow-control data + cost tracker.
@@ -117,6 +120,13 @@ async def _validate(state: ProductState) -> dict:
     return await validate_node(state)
 
 
+async def _gap_fill(state: ProductState) -> dict:
+    if state.get("error"):
+        return state
+    from pipeline.gap_fill import gap_fill_node
+    return await gap_fill_node(state)
+
+
 async def _save_costs(state: ProductState) -> dict:
     """Final node: persist cost tracking data to DB."""
     product_id = state["product_id"]
@@ -162,13 +172,15 @@ def build_pipeline() -> StateGraph:
     builder.add_node("search", _search)
     builder.add_node("extract", _extract)
     builder.add_node("validate", _validate)
+    builder.add_node("gap_fill", _gap_fill)
     builder.add_node("save_costs", _save_costs)
 
     builder.add_edge(START, "triage")
     builder.add_conditional_edges("triage", route_after_triage)
     builder.add_edge("ean_lookup", "search")
     builder.add_edge("search", "extract")
-    builder.add_edge("extract", "validate")
+    builder.add_edge("extract", "gap_fill")
+    builder.add_edge("gap_fill", "validate")
     builder.add_edge("validate", "save_costs")
     builder.add_edge("save_costs", END)
 

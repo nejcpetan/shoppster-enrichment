@@ -526,6 +526,8 @@ async def reset_product(id: int):
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
     """, (id,))
+    # Clean up cached scraped pages
+    conn.execute("DELETE FROM scraped_pages WHERE product_id = ?", (id,))
     conn.commit()
     conn.close()
 
@@ -571,7 +573,7 @@ def get_dashboard_stats():
     done = conn.execute("SELECT COUNT(*) as c FROM products WHERE status = 'done'").fetchone()['c']
     errors = conn.execute("SELECT COUNT(*) as c FROM products WHERE status = 'error'").fetchone()['c']
     needs_review = conn.execute("SELECT COUNT(*) as c FROM products WHERE status = 'needs_review'").fetchone()['c']
-    processing = conn.execute("SELECT COUNT(*) as c FROM products WHERE status IN ('enriching','classifying','searching','extracting','validating')").fetchone()['c']
+    processing = conn.execute("SELECT COUNT(*) as c FROM products WHERE status IN ('enriching','classifying','searching','extracting','validating','gap_filling')").fetchone()['c']
     conn.close()
     return {
         "total": total, "pending": pending, "done": done,

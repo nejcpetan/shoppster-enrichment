@@ -218,9 +218,11 @@ class LLMCall:
     cost_usd: float
     phase: str
     timestamp: str = ""
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "model": self.model,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
@@ -228,6 +230,11 @@ class LLMCall:
             "phase": self.phase,
             "timestamp": self.timestamp,
         }
+        if self.cache_creation_input_tokens > 0:
+            d["cache_creation_input_tokens"] = self.cache_creation_input_tokens
+        if self.cache_read_input_tokens > 0:
+            d["cache_read_input_tokens"] = self.cache_read_input_tokens
+        return d
 
 
 @dataclass
@@ -266,15 +273,27 @@ class CostTracker:
         model: str,
         input_tokens: int,
         output_tokens: int,
-        phase: str = "unknown"
+        phase: str = "unknown",
+        cache_creation_input_tokens: int = 0,
+        cache_read_input_tokens: int = 0,
     ) -> float:
         """
         Record an LLM call and return its cost in USD.
         model: "claude_haiku", "claude_sonnet", "gemini_flash"
+
+        Cache-aware cost calculation:
+        - cache_creation_input_tokens: charged at 1.25x base input price
+        - cache_read_input_tokens: charged at 0.1x base input price
+        - input_tokens: non-cached tokens at base input price
         """
         pricing = PRICING.get(model, PRICING["claude_haiku"])
+        input_price = pricing["input_per_million"]
+
+        # Cost = non-cached input + cache writes (1.25x) + cache reads (0.1x) + output
         cost = (
-            (input_tokens / 1_000_000) * pricing["input_per_million"]
+            (input_tokens / 1_000_000) * input_price
+            + (cache_creation_input_tokens / 1_000_000) * input_price * 1.25
+            + (cache_read_input_tokens / 1_000_000) * input_price * 0.1
             + (output_tokens / 1_000_000) * pricing["output_per_million"]
         )
 
@@ -285,12 +304,21 @@ class CostTracker:
             cost_usd=cost,
             phase=phase,
             timestamp=datetime.now().isoformat(),
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
         )
         self.llm_calls.append(call)
 
+        cache_info = ""
+        if cache_read_input_tokens > 0:
+            cache_info = f" | cache_read={cache_read_input_tokens}"
+        elif cache_creation_input_tokens > 0:
+            cache_info = f" | cache_write={cache_creation_input_tokens}"
+
         logger.debug(
-            f"[Product {self.product_id}] 💰 {model} | "
-            f"{input_tokens}→{output_tokens} tokens | ${cost:.5f} ({phase})"
+            f"[Product {self.product_id}] {model} | "
+            f"{input_tokens}+{cache_creation_input_tokens}+{cache_read_input_tokens}→{output_tokens} tokens | "
+            f"${cost:.5f} ({phase}){cache_info}"
         )
         return cost
 
@@ -336,6 +364,14 @@ class CostTracker:
         return sum(c.output_tokens for c in self.llm_calls)
 
     @property
+    def total_cache_read_tokens(self) -> int:
+        return sum(c.cache_read_input_tokens for c in self.llm_calls)
+
+    @property
+    def total_cache_creation_tokens(self) -> int:
+        return sum(c.cache_creation_input_tokens for c in self.llm_calls)
+
+    @property
     def total_api_credits(self) -> Dict[str, int]:
         credits: Dict[str, int] = {}
         for c in self.api_calls:
@@ -360,11 +396,19 @@ class CostTracker:
 
     def get_summary(self) -> dict:
         """Full cost summary for storage in the database."""
+        cache_read = self.total_cache_read_tokens
+        cache_creation = self.total_cache_creation_tokens
+        total_cacheable = cache_read + cache_creation
+        cache_hit_rate = (cache_read / total_cacheable * 100) if total_cacheable > 0 else 0
+
         return {
             "product_id": self.product_id,
             "total_cost_usd": round(self.total_cost, 6),
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,
+            "total_cache_read_tokens": cache_read,
+            "total_cache_creation_tokens": cache_creation,
+            "cache_hit_rate_pct": round(cache_hit_rate, 1),
             "total_api_credits": self.total_api_credits,
             "cost_by_phase": self.get_cost_by_phase(),
             "cost_by_service": self.get_cost_by_service(),

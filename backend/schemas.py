@@ -20,7 +20,7 @@ class EnrichedField(BaseModel):
     value: str | float | int | None = None
     unit: str | None = None  # "cm", "kg", "L", "mm", etc.
     source_url: str | None = None
-    confidence: Literal["official", "third_party", "inferred", "not_found"] = "not_found"
+    confidence: Literal["official", "authorized", "third_party", "inferred", "not_found"] = "not_found"
     notes: str | None = None
 
 
@@ -33,6 +33,7 @@ class ProductClassification(BaseModel):
     model_number: str | None = None
     parsed_color: str | None = None
     parsed_size: str | None = None
+    manufacturer_domain: str | None = None  # e.g., "makita.com", "bosch.com"
     reasoning: str
 
 
@@ -72,7 +73,7 @@ class TechnicalSpec(BaseModel):
     value: str                  # e.g., "230V", "3000", "1800W"
     unit: Optional[str] = None  # e.g., "V", "rpm", "W"
     source_url: Optional[str] = None
-    confidence: Literal["official", "third_party", "inferred", "not_found"] = "not_found"
+    confidence: Literal["official", "authorized", "third_party", "inferred", "not_found"] = "not_found"
 
 
 class TechnicalData(BaseModel):
@@ -88,7 +89,7 @@ class WarrantyInfo(BaseModel):
     type: Optional[str] = None                   # "manufacturer", "retailer", "extended"
     conditions: Optional[str] = None             # key conditions/limitations
     source_url: Optional[str] = None
-    confidence: Literal["official", "third_party", "inferred", "not_found"] = "not_found"
+    confidence: Literal["official", "authorized", "third_party", "inferred", "not_found"] = "not_found"
 
 
 # ─── Documents / PDFs ─────────────────────────────────────────────────────────
@@ -169,6 +170,19 @@ class ContentExtraction(BaseModel):
     warranty_duration: str = ""
     warranty_type: str = ""
     warranty_conditions: str = ""
+
+
+class GapFillExtraction(BaseModel):
+    """Targeted schema for gap-fill — only critical missing fields."""
+    net_weight: EnrichedField = EnrichedField()
+    packaged_weight: EnrichedField = EnrichedField()
+    packaged_height: EnrichedField = EnrichedField()
+    packaged_length: EnrichedField = EnrichedField()
+    packaged_width: EnrichedField = EnrichedField()
+    warranty_duration: str = ""
+    warranty_type: str = ""
+    warranty_conditions: str = ""
+    short_description: str = ""
 
 
 # ─── Search Phase Schemas ─────────────────────────────────────────────────────

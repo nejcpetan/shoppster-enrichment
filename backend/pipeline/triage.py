@@ -43,6 +43,9 @@ Given a product name (often in Slovenian), EAN code, and any existing data:
 1. PARSE the product name to extract: brand, model number, color hints, size hints
 2. CLASSIFY the product type into one of: standard_product, accessory, liquid, soft_good, electronics, other
 3. Provide reasoning for your classification
+4. MANUFACTURER DOMAIN: Identify the brand's official website domain (e.g., "makita.com", "bosch.com", "texas-garden.com").
+   Return just the domain — no "http://", no "www." prefix, no paths.
+   Set to null if the brand has no obvious website or you cannot determine it confidently.
 
 PRODUCT TYPE RULES:
 - standard_product: Physical products with standard dimensions (H/L/W). Tools, machines, appliances.
@@ -73,11 +76,13 @@ Existing Weight: {product.get('weight', 'None')}"""
             return_usage=True
         )
 
-        # Track cost
+        # Track cost (with cache metrics)
         if cost_tracker:
             cost_tracker.add_llm_call(
                 usage["model"], usage["input_tokens"], usage["output_tokens"],
-                phase="triage"
+                phase="triage",
+                cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
+                cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
             )
 
         # Save to DB
