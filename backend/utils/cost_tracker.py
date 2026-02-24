@@ -55,6 +55,7 @@ _limits = {
     "daily_product_limit": int(os.getenv("DAILY_PRODUCT_LIMIT", "200")),
     "max_batch_size": int(os.getenv("MAX_BATCH_SIZE", "50")),
     "max_daily_cost_usd": float(os.getenv("MAX_DAILY_COST_USD", "50.0")),
+    "market_region": os.getenv("MARKET_REGION", ""),
 }
 
 
@@ -76,6 +77,8 @@ def set_limits(new_limits: dict) -> dict:
                 _limits[key] = max(0.0, float(val))
             else:
                 _limits[key] = max(1, int(val))
+    if "market_region" in new_limits:
+        _limits["market_region"] = str(new_limits["market_region"] or "").strip()
     logger.info(f"Guardrail limits updated: {_limits}")
     return dict(_limits)
 
@@ -136,6 +139,7 @@ def get_daily_stats() -> dict:
     total_cost_all_time = 0.0
     total_products_with_cost = len(all_cost_rows)
     cost_per_product_list = []
+    elapsed_times: list[float] = []
 
     for row in all_cost_rows:
         try:
@@ -143,10 +147,18 @@ def get_daily_stats() -> dict:
             cost = cd.get('total_cost_usd', 0)
             total_cost_all_time += cost
             cost_per_product_list.append(cost)
-        except (json.JSONDecodeError, TypeError):
+            # Compute elapsed time if both timestamps exist
+            started = cd.get('started_at')
+            completed = cd.get('completed_at')
+            if started and completed:
+                t0 = datetime.fromisoformat(started)
+                t1 = datetime.fromisoformat(completed)
+                elapsed_times.append((t1 - t0).total_seconds())
+        except (json.JSONDecodeError, TypeError, ValueError):
             pass
 
     avg_cost_per_product = (total_cost_all_time / total_products_with_cost) if total_products_with_cost > 0 else 0
+    avg_enrichment_time_seconds = (sum(elapsed_times) / len(elapsed_times)) if elapsed_times else 0
 
     conn.close()
 
@@ -166,6 +178,7 @@ def get_daily_stats() -> dict:
         "total_products_with_cost": total_products_with_cost,
         "total_cost_all_time_usd": round(total_cost_all_time, 4),
         "avg_cost_per_product_usd": round(avg_cost_per_product, 4),
+        "avg_enrichment_time_seconds": round(avg_enrichment_time_seconds, 1),
 
         # Limits
         "daily_product_limit": limits["daily_product_limit"],

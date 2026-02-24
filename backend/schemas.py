@@ -135,6 +135,7 @@ class EnrichedProduct(BaseModel):
     country_of_origin: EnrichedField = EnrichedField()
     image_url: EnrichedField = EnrichedField()
     image_urls: List[str] = Field(default_factory=list)
+    image_source_map: Dict[str, str] = Field(default_factory=dict)  # image URL → source page URL
 
 
 # ─── LLM Extraction Sub-Schemas ──────────────────────────────────────────────

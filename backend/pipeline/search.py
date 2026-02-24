@@ -8,12 +8,26 @@ import os
 import json
 import logging
 from datetime import datetime
+from urllib.parse import urlparse
 from tavily import TavilyClient
 from db import get_db_connection, update_step, append_log
 from utils.llm import classify_with_schema
+from utils.cost_tracker import get_limits
 from schemas import SearchResultList, ProductClassification
 
 logger = logging.getLogger("pipeline.search")
+
+# Paths that indicate a homepage/non-product page (never contain useful product data)
+_USELESS_PATHS = {'', '/', '/about', '/history', '/contact', '/impressum', '/privacy', '/terms'}
+
+
+def _has_product_path(url: str) -> bool:
+    """Return True if the URL has a meaningful path (not a homepage or generic info page)."""
+    try:
+        path = urlparse(url).path.rstrip('/')
+        return path.lower() not in _USELESS_PATHS
+    except Exception:
+        return True  # keep on parse failure
 
 
 async def search_node(state: dict) -> dict:
@@ -46,20 +60,27 @@ async def search_node(state: dict) -> dict:
     product_type = classification.get('product_type', '')
     manufacturer_domain = classification.get('manufacturer_domain')
     ean = product['ean']
+    market_region = get_limits().get("market_region", "")
 
-    # Build general search queries
+    # Build general search queries (append market region if configured)
+    region_suffix = f" {market_region}" if market_region else ""
     queries = []
     if brand and model:
-        queries.append(f"{brand} {model} specifications")
+        queries.append(f"{brand} {model} specifications{region_suffix}")
         queries.append(f"{brand} {model} {ean}")
     elif brand:
-        queries.append(f"{brand} {product['product_name']} specifications")
+        queries.append(f"{brand} {product['product_name']} specifications{region_suffix}")
     else:
         queries.append(f"{product['product_name']} {ean}")
     queries.append(f"{ean}")  # EAN-only fallback
 
-    # Manufacturer base query (used in Phase 1)
-    mfr_query = f"{brand} {model}".strip() if (brand and model) else (brand or product['product_name'])
+    # Manufacturer base query (used in Phase 1) — include product name + EAN for specificity
+    if brand and model:
+        mfr_query = f"{brand} {model} {ean}"
+    elif brand:
+        mfr_query = f"{brand} {product['product_name']} {ean}"
+    else:
+        mfr_query = f"{product['product_name']} {ean}"
 
     # Determine search provider
     search_provider = os.getenv("SEARCH_PROVIDER", "tavily").lower()
@@ -94,7 +115,8 @@ async def search_node(state: dict) -> dict:
                     "timestamp": datetime.now().isoformat(),
                     "phase": "search", "step": "tavily_manufacturer", "status": "success",
                     "details": f"Manufacturer search on {manufacturer_domain} → {len(mfr_results)} results",
-                    "credits_used": {"tavily": 1}
+                    "credits_used": {"tavily": 1},
+                    "urls": [{"url": r.get("url", ""), "title": r.get("title", "")} for r in mfr_results]
                 })
                 logger.info(f"[Product {product_id}]   → {len(mfr_results)} manufacturer results")
             except Exception as e:
@@ -120,11 +142,13 @@ async def search_node(state: dict) -> dict:
                 if cost_tracker:
                     cost_tracker.add_api_call("tavily", credits=1, phase="search")
 
+                search_results = response.get('results', [])
                 append_log(product_id, {
                     "timestamp": datetime.now().isoformat(),
                     "phase": "search", "step": "tavily_search", "status": "success",
                     "details": f"Query '{q}' → {num_results} results",
-                    "credits_used": {"tavily": 1}
+                    "credits_used": {"tavily": 1},
+                    "urls": [{"url": r.get("url", ""), "title": r.get("title", "")} for r in search_results]
                 })
 
                 if len(all_results) >= 6:
@@ -191,7 +215,8 @@ async def search_node(state: dict) -> dict:
                     "timestamp": datetime.now().isoformat(),
                     "phase": "search", "step": "firecrawl_manufacturer", "status": "success",
                     "details": f"Manufacturer search on {manufacturer_domain} → {len(mfr_results)} results",
-                    "credits_used": {"firecrawl": 2}
+                    "credits_used": {"firecrawl": 2},
+                    "urls": [{"url": r.get("url", ""), "title": r.get("title", "")} for r in mfr_results]
                 })
                 logger.info(f"[Product {product_id}]   → {len(mfr_results)} manufacturer results")
             except Exception as e:
@@ -221,7 +246,8 @@ async def search_node(state: dict) -> dict:
                     "timestamp": datetime.now().isoformat(),
                     "phase": "search", "step": "firecrawl_search", "status": "success",
                     "details": f"Query '{q}' → {num_results} results",
-                    "credits_used": {"firecrawl": 2}
+                    "credits_used": {"firecrawl": 2},
+                    "urls": [{"url": r.get("url", ""), "title": r.get("title", "")} for r in results_list]
                 })
 
                 if len(all_results) >= 6:
@@ -247,6 +273,9 @@ async def search_node(state: dict) -> dict:
         if u and u not in seen_urls:
             seen_urls.add(u)
             unique_results.append(r)
+
+    # Filter out homepage/root URLs — these never contain product data
+    unique_results = [r for r in unique_results if _has_product_path(r.get('url', ''))]
 
     if not unique_results:
         append_log(product_id, {
@@ -314,7 +343,8 @@ Search results to classify:
             "timestamp": datetime.now().isoformat(),
             "phase": "search", "step": "url_classification", "status": "success",
             "details": f"Classified {len(classified_list.results)} URLs: {summary}",
-            "credits_used": {"claude_in": usage["input_tokens"], "claude_out": usage["output_tokens"]}
+            "credits_used": {"claude_in": usage["input_tokens"], "claude_out": usage["output_tokens"]},
+            "urls": [{"url": r.url, "source_type": r.source_type} for r in classified_list.results]
         })
 
         # Save results

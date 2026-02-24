@@ -284,6 +284,7 @@ async def gap_fill_node(state: dict) -> dict:
     gap_fill_system = f"""You are a product data extraction assistant.
 Product: {classification.brand} {classification.model_number} (EAN: {product['ean']})
 You will receive scraped third-party page content and instructions to extract specific missing fields.
+All extracted text (descriptions, features, specs, warranty terms) MUST be in English. Translate if needed. Do NOT translate brand names, model numbers, or proper nouns.
 If a field is not found on the page, leave it as the default (null/empty)."""
 
     for page in third_party_pages:

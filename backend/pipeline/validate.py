@@ -195,6 +195,7 @@ Check for:
 8. TECHNICAL SPECS: Do the specifications make sense for this product type?
 9. WARRANTY: Is warranty duration reasonable for this product category?
 
+Return all text (issue descriptions, review reasons) in English.
 Return JSON matching the provided schema."""
 
     user_prompt = f"""Product: {classification.brand} {classification.model_number} ({classification.product_type})
@@ -435,11 +436,10 @@ def _build_data_summary(model: EnrichedProduct) -> str:
     if model.warranty.duration and model.warranty.duration.value:
         lines.append(f"WARRANTY: {model.warranty.duration.value} ({model.warranty.type or 'unknown type'})")
 
-    # Documents
+    # Documents — excluded from validation to avoid penalizing products
+    # for incorrect/unrelated PDFs (low-impact supplementary data)
     if model.documents.documents:
-        lines.append(f"DOCUMENTS: {len(model.documents.documents)} files")
-        for doc in model.documents.documents:
-            lines.append(f"  [{doc.doc_type}] {doc.title}")
+        lines.append(f"DOCUMENTS: {len(model.documents.documents)} files (not validated)")
 
     # Images
     lines.append(f"IMAGES: {len(model.image_urls)} URLs")

@@ -326,6 +326,7 @@ async def extract_node(state: dict) -> dict:
     content_source_urls: List[str] = []
     content_source_types: List[str] = []  # Track source tier for description preference
     all_discovered_images: List[str] = []
+    image_source_map: Dict[str, str] = {}  # image URL → source page URL
     all_pdf_links: List[Dict[str, str]] = []
     source_type_by_url: Dict[str, str] = {}  # Maps page URL → source type for doc dedup
     fc_api_key = os.getenv("FIRECRAWL_API_KEY")
@@ -376,6 +377,8 @@ async def extract_node(state: dict) -> dict:
             # Extract images from this page
             page_images = _extract_all_image_urls(markdown, url)
             all_discovered_images.extend(page_images)
+            for img in page_images:
+                image_source_map.setdefault(img, url)
 
             # Extract PDF links from this page
             page_pdfs = _extract_pdf_links(markdown, url)
@@ -396,6 +399,8 @@ async def extract_node(state: dict) -> dict:
 Source URL: {url}
 Source type: {source_type} (confidence level: {confidence_level})
 Product: {classification.brand} {classification.model_number} (EAN: {product['ean']})
+
+IMPORTANT: All extracted text (descriptions, features, tech specs, warranty terms) MUST be returned in English. Translate from the source language if needed. Do NOT translate brand names, model numbers, or proper nouns.
 
 The full page content is provided below. Follow the extraction instructions in the user message."""
 
@@ -450,13 +455,15 @@ Also extract:
                     for img in dim_extraction.image_urls:
                         if _is_valid_image_url(img):
                             all_discovered_images.append(img)
+                            image_source_map.setdefault(img, url)
 
                 append_log(product_id, {
                     "timestamp": datetime.now().isoformat(),
                     "phase": "extract", "step": "pass1_structured", "status": "success",
                     "details": f"Pass 1 done for {_shorten_url(url)} ({source_type})",
                     "credits_used": {"claude_in": usage["input_tokens"], "claude_out": usage["output_tokens"],
-                                     "cache_read": usage.get("cache_read_input_tokens", 0)}
+                                     "cache_read": usage.get("cache_read_input_tokens", 0)},
+                    "source_url": url, "source_type": source_type
                 })
             except Exception as e:
                 logger.warning(f"[Product {product_id}]   Pass 1 failed for {_shorten_url(url)}: {e}")
@@ -540,7 +547,8 @@ RULES:
                     "phase": "extract", "step": "pass2_content", "status": "success",
                     "details": f"Pass 2 done for {_shorten_url(url)}: {spec_count} tech specs, {feat_count} features, warranty={bool(content_extraction.warranty_duration)}",
                     "credits_used": {"claude_in": usage["input_tokens"], "claude_out": usage["output_tokens"],
-                                     "cache_read": usage.get("cache_read_input_tokens", 0)}
+                                     "cache_read": usage.get("cache_read_input_tokens", 0)},
+                    "source_url": url, "source_type": source_type
                 })
             except Exception as e:
                 logger.warning(f"[Product {product_id}]   Pass 2 failed for {_shorten_url(url)}: {e}")
@@ -573,6 +581,8 @@ RULES:
                 if markdown:
                     page_images = _extract_all_image_urls(markdown, url)
                     all_discovered_images.extend(page_images)
+                    for img in page_images:
+                        image_source_map.setdefault(img, url)
                     page_pdfs = _extract_pdf_links(markdown, url)
                     all_pdf_links.extend(page_pdfs)
                     append_log(product_id, {
@@ -613,6 +623,8 @@ RULES:
                     # Extract images and PDFs from third-party pages (regex, no LLM cost)
                     page_images = _extract_all_image_urls(tp_markdown, tp_url)
                     all_discovered_images.extend(page_images)
+                    for img in page_images:
+                        image_source_map.setdefault(img, tp_url)
                     page_pdfs = _extract_pdf_links(tp_markdown, tp_url)
                     all_pdf_links.extend(page_pdfs)
 
@@ -690,12 +702,14 @@ RULES:
         append_log(product_id, {
             "timestamp": datetime.now().isoformat(),
             "phase": "extract", "step": "documents", "status": "success",
-            "details": f"Found {len(documents)} documents (filtered from {len(all_pdf_links)} raw): {', '.join(d.doc_type for d in documents)}"
+            "details": f"Found {len(documents)} documents (filtered from {len(all_pdf_links)} raw): {', '.join(d.doc_type for d in documents)}",
+            "urls": [{"url": d.url, "title": d.title, "doc_type": d.doc_type} for d in documents]
         })
 
     # ── Deduplicate and store images ──────────────────────────────────────
     unique_images = list(dict.fromkeys(all_discovered_images))[:20]
     merged.image_urls = unique_images
+    merged.image_source_map = {img: image_source_map[img] for img in unique_images if img in image_source_map}
 
     logger.info(f"[Product {product_id}]   ✓ Merged: {len(dimension_extractions)} dim sources, {len(content_extractions)} content sources, {len(unique_images)} images, {len(documents)} docs")
     append_log(product_id, {
@@ -1325,6 +1339,7 @@ async def _fill_country_of_origin(brand: str | None, ean: str, product_id: int, 
             return None
 
         system_prompt = """Determine the country of origin (manufacturing country) for this product.
+Return the country name in English.
 If you find it, set confidence to "third_party" if from a reliable source, "inferred" if guessing from brand info.
 If you cannot determine, return value as null."""
 
