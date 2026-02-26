@@ -159,6 +159,7 @@ class DimensionsExtraction(BaseModel):
     color: EnrichedField = EnrichedField()
     country_of_origin: EnrichedField = EnrichedField()
     image_url: EnrichedField = EnrichedField()
+    gallery_image_urls: List[str] = Field(default_factory=list)
     image_urls: List[str] = Field(default_factory=list)
 
 
