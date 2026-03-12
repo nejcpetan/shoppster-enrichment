@@ -192,9 +192,11 @@ Check for:
 5. DATA CONFLICTS: Does any value contradict the product name? (e.g., name says "20L" but volume is "5L")
 6. MISSING CRITICAL DATA: Which fields SHOULD have data but don't?
 7. DESCRIPTION QUALITY: Is the short description present? Is it a reasonable summary?
+   NOTE: Short and Marketing Descriptions shown below are TRUNCATED for cost reasons (first 200-300 chars only). Do NOT flag descriptions as incomplete, truncated, or abruptly ending — the full text exists in the database. You should absolutely still check all the other data for sound reasoning and logic.
 8. TECHNICAL SPECS: Do the specifications make sense for this product type?
 9. WARRANTY: Is warranty duration reasonable for this product category?
 
+Return all text (issue descriptions, review reasons) in English.
 Return JSON matching the provided schema."""
 
     user_prompt = f"""Product: {classification.brand} {classification.model_number} ({classification.product_type})
@@ -411,11 +413,19 @@ def _build_data_summary(model: EnrichedProduct) -> str:
     if model.country_of_origin and model.country_of_origin.value:
         lines.append(f"COUNTRY OF ORIGIN: {model.country_of_origin.value} ({model.country_of_origin.confidence})")
 
-    # Descriptions
+    # Descriptions (truncated with marker to avoid false validation errors)
     if model.descriptions.short_description and model.descriptions.short_description.value:
-        lines.append(f"SHORT DESCRIPTION: {str(model.descriptions.short_description.value)[:200]}")
+        desc_val = str(model.descriptions.short_description.value)
+        if len(desc_val) > 200:
+            lines.append(f"SHORT DESCRIPTION: {desc_val[:200]}… [truncated]")
+        else:
+            lines.append(f"SHORT DESCRIPTION: {desc_val}")
     if model.descriptions.marketing_description and model.descriptions.marketing_description.value:
-        lines.append(f"MARKETING DESCRIPTION: {str(model.descriptions.marketing_description.value)[:300]}")
+        desc_val = str(model.descriptions.marketing_description.value)
+        if len(desc_val) > 300:
+            lines.append(f"MARKETING DESCRIPTION: {desc_val[:300]}… [truncated]")
+        else:
+            lines.append(f"MARKETING DESCRIPTION: {desc_val}")
     if model.descriptions.features:
         lines.append(f"FEATURES: {len(model.descriptions.features)} items")
         for feat in model.descriptions.features[:5]:
@@ -435,11 +445,10 @@ def _build_data_summary(model: EnrichedProduct) -> str:
     if model.warranty.duration and model.warranty.duration.value:
         lines.append(f"WARRANTY: {model.warranty.duration.value} ({model.warranty.type or 'unknown type'})")
 
-    # Documents
+    # Documents — excluded from validation to avoid penalizing products
+    # for incorrect/unrelated PDFs (low-impact supplementary data)
     if model.documents.documents:
-        lines.append(f"DOCUMENTS: {len(model.documents.documents)} files")
-        for doc in model.documents.documents:
-            lines.append(f"  [{doc.doc_type}] {doc.title}")
+        lines.append(f"DOCUMENTS: {len(model.documents.documents)} files (not validated)")
 
     # Images
     lines.append(f"IMAGES: {len(model.image_urls)} URLs")

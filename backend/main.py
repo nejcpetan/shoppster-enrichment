@@ -48,10 +48,15 @@ app.add_middleware(
 class BatchProcessRequest(BaseModel):
     product_ids: List[int]
 
+class ManualProductRequest(BaseModel):
+    ean: str
+    product_name: str
+
 class LimitsUpdateRequest(BaseModel):
     daily_product_limit: Optional[int] = None
     max_batch_size: Optional[int] = None
     max_daily_cost_usd: Optional[float] = None
+    market_region: Optional[str] = None
 
 @app.on_event("startup")
 async def startup_event():
@@ -124,6 +129,27 @@ async def upload_products(file: UploadFile = File(...)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- Manual Add ---
+
+@app.post("/api/products/add")
+async def add_product_manually(req: ManualProductRequest):
+    ean = req.ean.strip()
+    name = req.product_name.strip()
+
+    if not ean or not name:
+        raise HTTPException(status_code=400, detail="EAN and product name are required")
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO products (ean, product_name, brand, weight, original_data)
+        VALUES (?, ?, ?, ?, ?)
+    """, (ean, name, None, None, json.dumps({"EAN": ean, "Name": name})))
+    conn.commit()
+    conn.close()
+
+    return {"message": f"Product '{name}' added successfully"}
 
 # --- Product Listing ---
 

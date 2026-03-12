@@ -19,7 +19,7 @@ import logging
 import asyncio
 import httpx
 from datetime import datetime
-from typing import List, Type, Dict, Any
+from typing import List, Type, Dict, Any, Optional, Set
 from urllib.parse import urljoin, urlparse
 from firecrawl import FirecrawlApp
 from pydantic import BaseModel
@@ -325,7 +325,10 @@ async def extract_node(state: dict) -> dict:
     content_extractions: List[ContentExtraction] = []
     content_source_urls: List[str] = []
     content_source_types: List[str] = []  # Track source tier for description preference
+    gallery_images: List[str] = []  # High-priority: from Firecrawl images format + LLM gallery extraction
+    other_discovered_images: List[str] = []  # Lower-priority: regex from markdown, third-party pages
     all_discovered_images: List[str] = []
+    image_source_map: Dict[str, str] = {}  # image URL → source page URL
     all_pdf_links: List[Dict[str, str]] = []
     source_type_by_url: Dict[str, str] = {}  # Maps page URL → source type for doc dedup
     fc_api_key = os.getenv("FIRECRAWL_API_KEY")
@@ -350,7 +353,7 @@ async def extract_node(state: dict) -> dict:
             logger.info(f"[Product {product_id}]   Scraping {_shorten_url(url)} ({source_type})...")
             update_step(product_id, "extracting", f"Scraping {_shorten_url(url)}...")
 
-            scraped = firecrawl.scrape(url, formats=['markdown'])
+            scraped = firecrawl.scrape(url, formats=['markdown', 'images'])
 
             # Track Firecrawl cost
             if cost_tracker:
@@ -361,6 +364,17 @@ async def extract_node(state: dict) -> dict:
                 markdown = scraped.markdown[:40000]
             elif isinstance(scraped, dict):
                 markdown = scraped.get('markdown', '')[:40000]
+
+            # Extract images from Firecrawl's dedicated images format (high priority)
+            firecrawl_images = []
+            if hasattr(scraped, 'images') and scraped.images:
+                firecrawl_images = scraped.images
+            elif isinstance(scraped, dict):
+                firecrawl_images = scraped.get('images', []) or []
+            for img in firecrawl_images:
+                if isinstance(img, str) and img.startswith('http') and _is_valid_image_url(img):
+                    gallery_images.append(img)
+                    image_source_map.setdefault(img, url)
 
             # Cache the scraped page for potential gap-fill use
             save_scraped_page(product_id, url, source_type, markdown if markdown else None, success=bool(markdown))
@@ -373,9 +387,11 @@ async def extract_node(state: dict) -> dict:
                 })
                 continue
 
-            # Extract images from this page
+            # Extract images from markdown via regex (lower priority)
             page_images = _extract_all_image_urls(markdown, url)
-            all_discovered_images.extend(page_images)
+            other_discovered_images.extend(page_images)
+            for img in page_images:
+                image_source_map.setdefault(img, url)
 
             # Extract PDF links from this page
             page_pdfs = _extract_pdf_links(markdown, url)
@@ -396,6 +412,8 @@ async def extract_node(state: dict) -> dict:
 Source URL: {url}
 Source type: {source_type} (confidence level: {confidence_level})
 Product: {classification.brand} {classification.model_number} (EAN: {product['ean']})
+
+IMPORTANT: All extracted text (descriptions, features, tech specs, warranty terms) MUST be returned in English. Translate from the source language if needed. Do NOT translate brand names, model numbers, or proper nouns.
 
 The full page content is provided below. Follow the extraction instructions in the user message."""
 
@@ -421,8 +439,14 @@ For each dimension field:
 Also extract:
 - color: The product's primary color.
 - country_of_origin: Manufacturing country if mentioned.
-- Extract the highest-resolution PRODUCT IMAGE URL (not PDFs, icons, or logos).
-- image_urls: List ALL product image URLs found on the page."""
+- image_url: The highest-resolution PRODUCT IMAGE URL (not PDFs, icons, or logos).
+- gallery_image_urls: URLs of images from the PRODUCT IMAGE GALLERY/CAROUSEL only
+  (the main product photos shown in the image slider/gallery at the top of the page).
+  IMPORTANT: Return FULL-SIZE image URLs, not thumbnail/preview versions.
+  Look for the largest version of each image — check for data-src, data-zoom-image,
+  href attributes on gallery image links, or URLs without size suffixes like _150x150.
+- image_urls: ALL OTHER product image URLs found elsewhere on the page
+  (feature illustrations, lifestyle shots, accessory images, etc.)."""
 
             try:
                 dim_extraction, usage = classify_with_schema(
@@ -445,18 +469,27 @@ Also extract:
                         cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
                     )
 
-                # Collect LLM-extracted images
+                # Collect LLM-extracted gallery images (high priority)
+                if dim_extraction.gallery_image_urls:
+                    for img in dim_extraction.gallery_image_urls:
+                        if _is_valid_image_url(img):
+                            gallery_images.append(img)
+                            image_source_map.setdefault(img, url)
+
+                # Collect LLM-extracted other images (lower priority)
                 if dim_extraction.image_urls:
                     for img in dim_extraction.image_urls:
                         if _is_valid_image_url(img):
-                            all_discovered_images.append(img)
+                            other_discovered_images.append(img)
+                            image_source_map.setdefault(img, url)
 
                 append_log(product_id, {
                     "timestamp": datetime.now().isoformat(),
                     "phase": "extract", "step": "pass1_structured", "status": "success",
                     "details": f"Pass 1 done for {_shorten_url(url)} ({source_type})",
                     "credits_used": {"claude_in": usage["input_tokens"], "claude_out": usage["output_tokens"],
-                                     "cache_read": usage.get("cache_read_input_tokens", 0)}
+                                     "cache_read": usage.get("cache_read_input_tokens", 0)},
+                    "source_url": url, "source_type": source_type
                 })
             except Exception as e:
                 logger.warning(f"[Product {product_id}]   Pass 1 failed for {_shorten_url(url)}: {e}")
@@ -540,7 +573,8 @@ RULES:
                     "phase": "extract", "step": "pass2_content", "status": "success",
                     "details": f"Pass 2 done for {_shorten_url(url)}: {spec_count} tech specs, {feat_count} features, warranty={bool(content_extraction.warranty_duration)}",
                     "credits_used": {"claude_in": usage["input_tokens"], "claude_out": usage["output_tokens"],
-                                     "cache_read": usage.get("cache_read_input_tokens", 0)}
+                                     "cache_read": usage.get("cache_read_input_tokens", 0)},
+                    "source_url": url, "source_type": source_type
                 })
             except Exception as e:
                 logger.warning(f"[Product {product_id}]   Pass 2 failed for {_shorten_url(url)}: {e}")
@@ -573,6 +607,8 @@ RULES:
                 if markdown:
                     page_images = _extract_all_image_urls(markdown, url)
                     all_discovered_images.extend(page_images)
+                    for img in page_images:
+                        image_source_map.setdefault(img, url)
                     page_pdfs = _extract_pdf_links(markdown, url)
                     all_pdf_links.extend(page_pdfs)
                     append_log(product_id, {
@@ -612,7 +648,9 @@ RULES:
                 if tp_markdown:
                     # Extract images and PDFs from third-party pages (regex, no LLM cost)
                     page_images = _extract_all_image_urls(tp_markdown, tp_url)
-                    all_discovered_images.extend(page_images)
+                    other_discovered_images.extend(page_images)
+                    for img in page_images:
+                        image_source_map.setdefault(img, tp_url)
                     page_pdfs = _extract_pdf_links(tp_markdown, tp_url)
                     all_pdf_links.extend(page_pdfs)
 
@@ -690,24 +728,33 @@ RULES:
         append_log(product_id, {
             "timestamp": datetime.now().isoformat(),
             "phase": "extract", "step": "documents", "status": "success",
-            "details": f"Found {len(documents)} documents (filtered from {len(all_pdf_links)} raw): {', '.join(d.doc_type for d in documents)}"
+            "details": f"Found {len(documents)} documents (filtered from {len(all_pdf_links)} raw): {', '.join(d.doc_type for d in documents)}",
+            "urls": [{"url": d.url, "title": d.title, "doc_type": d.doc_type} for d in documents]
         })
 
-    # ── Deduplicate and store images ──────────────────────────────────────
+    # ── Deduplicate and store images (gallery first, then others) ────────
+    gallery_set = set(gallery_images)  # Track which URLs are gallery images for sorting
+    all_discovered_images = gallery_images + other_discovered_images
     unique_images = list(dict.fromkeys(all_discovered_images))[:20]
     merged.image_urls = unique_images
+    merged.image_source_map = {img: image_source_map[img] for img in unique_images if img in image_source_map}
 
-    logger.info(f"[Product {product_id}]   ✓ Merged: {len(dimension_extractions)} dim sources, {len(content_extractions)} content sources, {len(unique_images)} images, {len(documents)} docs")
+    logger.info(f"[Product {product_id}]   ✓ Merged: {len(dimension_extractions)} dim sources, {len(content_extractions)} content sources, {len(unique_images)} images ({len(gallery_set)} gallery), {len(documents)} docs")
     append_log(product_id, {
         "timestamp": datetime.now().isoformat(),
         "phase": "extract", "step": "merge", "status": "success",
-        "details": f"Merged {len(dimension_extractions)} dim + {len(content_extractions)} content sources, {len(unique_images)} images, {len(documents)} docs"
+        "details": f"Merged {len(dimension_extractions)} dim + {len(content_extractions)} content sources, {len(unique_images)} images ({len(gallery_set)} gallery), {len(documents)} docs"
     })
 
     # ── Deterministic Image Filtering (no AI) ─────────────────────────────
     if unique_images:
         update_step(product_id, "extracting", f"🖼️ Filtering {len(unique_images)} images (HTTP check)...")
-        cleaned_images = await _filter_images_deterministic(unique_images, product_id)
+        cleaned_images = await _filter_images_deterministic(
+            unique_images, product_id,
+            gallery_urls=gallery_set,
+            image_source_map=image_source_map,
+            source_type_by_url=source_type_by_url,
+        )
         merged.image_urls = cleaned_images
     else:
         merged.image_urls = []
@@ -1100,11 +1147,37 @@ def _merge_warranty(
     return warranty
 
 
+# ─── Thumbnail URL Resolution ────────────────────────────────────────────────
+
+THUMBNAIL_PATTERNS = [
+    (r'/thumb(?:nail)?s?/', '/'),              # /thumb/ or /thumbnails/ → /
+    (r'[_-](\d{2,3})x(\d{2,3})\.', '.'),      # _150x150. → .
+    (r'\?w=\d+&?h?=?\d*$', ''),               # ?w=100&h=100 → remove
+    (r'/small/', '/large/'),                    # /small/ → /large/
+    (r'/s(\d{2,3})x(\d{2,3})/', '/'),          # /s150x150/ → /
+    (r'[_-](?:thumb|tn|preview|mini)\.', '.'),  # _thumb. or _preview. → .
+]
+
+
+def _try_resolve_full_size(url: str) -> Optional[str]:
+    """Attempt to convert a thumbnail URL to its full-size variant.
+    Returns the resolved URL if a pattern matched, or None if no change."""
+    for pattern, replacement in THUMBNAIL_PATTERNS:
+        if re.search(pattern, url, re.IGNORECASE):
+            resolved = re.sub(pattern, replacement, url, flags=re.IGNORECASE)
+            if resolved != url:
+                return resolved
+    return None
+
+
 # ─── Deterministic Image Filtering ───────────────────────────────────────────
 
 async def _filter_images_deterministic(
     image_urls: List[str],
-    product_id: int
+    product_id: int,
+    gallery_urls: Optional[Set[str]] = None,
+    image_source_map: Optional[Dict[str, str]] = None,
+    source_type_by_url: Optional[Dict[str, str]] = None,
 ) -> List[str]:
     """
     Filter images using HTTP HEAD requests + URL heuristics.
@@ -1112,9 +1185,10 @@ async def _filter_images_deterministic(
 
     Strategy:
     1. Parallel HTTP HEAD requests for speed
-    2. Enforce MIN_IMAGE_SIZE_BYTES (45KB) to drop low-res/thumbnails
-    3. Sort surviving images by file size (largest = highest quality first)
-    4. Keep top MAX_IMAGES_TO_KEEP
+    2. Try to resolve thumbnail URLs to full-size versions
+    3. Enforce MIN_IMAGE_SIZE_BYTES (45KB) to drop low-res/thumbnails
+    4. Sort by: gallery status → source tier → file size
+    5. Keep top MAX_IMAGES_TO_KEEP
     """
     if not image_urls:
         return []
@@ -1124,13 +1198,29 @@ async def _filter_images_deterministic(
     kept_candidates = []  # List of (url, size_bytes)
     checked = 0
     skipped_reasons: Dict[str, int] = {}
+    resolved_count = 0
 
     candidates = image_urls[:MAX_IMAGES_TO_CHECK]
     checked = len(candidates)
 
     async def check_url(client, url):
+        nonlocal resolved_count
+        # Try to resolve thumbnail to full-size
+        resolved_url = _try_resolve_full_size(url)
+        final_url = url
+
+        if resolved_url:
+            try:
+                resp = await client.head(resolved_url)
+                content_type = resp.headers.get("content-type", "").lower()
+                if resp.status_code < 400 and "image" in content_type:
+                    final_url = resolved_url
+                    resolved_count += 1
+            except Exception:
+                pass  # Fall back to original URL
+
         try:
-            resp = await client.head(url)
+            resp = await client.head(final_url)
             content_type = resp.headers.get("content-type", "").lower()
             cl_str = resp.headers.get("content-length", "0")
             try:
@@ -1152,15 +1242,15 @@ async def _filter_images_deterministic(
                     return (None, "too_small")
                 if content_length > MAX_IMAGE_SIZE_BYTES:
                     return (None, "too_large")
-            
-            # If content_length is 0 (missing header), we give benefit of doubt 
+
+            # If content_length is 0 (missing header), we give benefit of doubt
             # but treat as small size for sorting (1 byte)
             size_for_sort = content_length if content_length > 0 else 1
-            return ((url, size_for_sort), None)
+            return ((final_url, size_for_sort), None)
 
         except Exception:
             # On error, we keep it as fallback (size 0)
-            return ((url, 0), "head_error_kept")
+            return ((final_url, 0), "head_error_kept")
 
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(5.0, connect=3.0),
@@ -1175,27 +1265,35 @@ async def _filter_images_deterministic(
             kept_candidates.append(res)
         if skip_reason:
             if skip_reason == "head_error_kept":
-                # We kept it, but tracked the error nature? 
-                # Actually my logic above returns ((url, 0), "head_error_kept")
-                # So if res is present, we keep it.
                 pass
             else:
                 skipped_reasons[skip_reason] = skipped_reasons.get(skip_reason, 0) + 1
 
-    # Sort: Largest size first (prioritize high resolution)
-    kept_candidates.sort(key=lambda x: x[1], reverse=True)
+    # Sort: gallery first → manufacturer first → largest size first
+    def _sort_key(item):
+        url, size = item
+        # Gallery priority (0 = gallery, 1 = other)
+        is_gallery = 0 if (gallery_urls and url in gallery_urls) else 1
+        # Source tier (0 = manufacturer, 1 = authorized, 2 = third-party/unknown)
+        source_page = (image_source_map or {}).get(url, "")
+        src_type = (source_type_by_url or {}).get(source_page, "third_party")
+        tier = {"manufacturer": 0, "authorized_distributor": 1}.get(src_type, 2)
+        return (is_gallery, tier, -size)
+
+    kept_candidates.sort(key=_sort_key)
 
     # Extract clean URLs
     kept_urls = [x[0] for x in kept_candidates[:MAX_IMAGES_TO_KEEP]]
 
     removed_count = checked - len(kept_urls)
     skip_summary = ", ".join(f"{v} {k}" for k, v in skipped_reasons.items()) if skipped_reasons else "all passed"
-    logger.info(f"[Product {product_id}]   ✓ Image filtering: kept {len(kept_urls)}/{checked} sorted by size (removed: {skip_summary})")
+    gallery_kept = sum(1 for u in kept_urls if gallery_urls and u in gallery_urls)
+    logger.info(f"[Product {product_id}]   ✓ Image filtering: kept {len(kept_urls)}/{checked} ({gallery_kept} gallery, {resolved_count} resolved from thumbnails) (removed: {skip_summary})")
 
     append_log(product_id, {
         "timestamp": datetime.now().isoformat(),
         "phase": "extract", "step": "image_filter", "status": "success",
-        "details": f"Kept {len(kept_urls)}/{checked} images. Removed: {skip_summary}"
+        "details": f"Kept {len(kept_urls)}/{checked} images ({gallery_kept} gallery, {resolved_count} thumbnail→full-size). Removed: {skip_summary}"
     })
 
     return kept_urls
@@ -1325,6 +1423,7 @@ async def _fill_country_of_origin(brand: str | None, ean: str, product_id: int, 
             return None
 
         system_prompt = """Determine the country of origin (manufacturing country) for this product.
+Return the country name in English.
 If you find it, set confidence to "third_party" if from a reliable source, "inferred" if guessing from brand info.
 If you cannot determine, return value as null."""
 
