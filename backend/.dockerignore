@@ -1,0 +1,14 @@
+__pycache__
+*.pyc
+*.pyo
+.env
+products.db
+products.db-shm
+products.db-wal
+*.db
+node_modules
+.git
+.vscode
+*.csv
+service-account.json
+.venv

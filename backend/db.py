@@ -1,104 +1,211 @@
-import sqlite3
+"""
+Database access layer — wraps SQLAlchemy.
+
+All functions maintain the same signatures as the original SQLite version.
+Pipeline modules and main.py import from here unchanged.
+"""
+
 import json
-import os
+import logging
 from datetime import datetime
+from sqlalchemy import text
+from database.session import init_engine, get_session
 from events import event_bus
 
-DB_PATH = "products.db"
+logger = logging.getLogger("database")
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    # WAL mode on every connection — allows concurrent reads during writes
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    return conn
+
+# ---------------------------------------------------------------------------
+# Compatibility layer — makes existing sqlite3-style code work unchanged
+# ---------------------------------------------------------------------------
+
+class CompatRow:
+    """
+    Mimics sqlite3.Row — supports both dict(row) and row['column'] access.
+
+    dict(row) works via the mapping protocol: Python calls keys() then __getitem__.
+    """
+
+    def __init__(self, data: dict):
+        self._data = data
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __contains__(self, key):
+        return key in self._data
+
+    def keys(self):
+        return self._data.keys()
+
+    def values(self):
+        return self._data.values()
+
+    def items(self):
+        return self._data.items()
+
+    def __iter__(self):
+        """Iterate over keys (mapping protocol — enables dict(row))."""
+        return iter(self._data)
+
+    def __len__(self):
+        return len(self._data)
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+
+class CompatResult:
+    """Wraps SQLAlchemy CursorResult to provide fetchone()/fetchall() with CompatRow."""
+
+    def __init__(self, result):
+        self._result = result
+
+    def fetchone(self):
+        row = self._result.fetchone()
+        if row is None:
+            return None
+        return CompatRow(dict(row._mapping))
+
+    def fetchall(self):
+        rows = self._result.fetchall()
+        return [CompatRow(dict(r._mapping)) for r in rows]
+
+    @property
+    def lastrowid(self):
+        try:
+            return self._result.lastrowid
+        except Exception:
+            return None
+
+
+def _convert_placeholders(sql: str, params: tuple) -> tuple[str, dict]:
+    """
+    Convert SQLite-style ? placeholders to SQLAlchemy :p0/:p1/... named params.
+    Skips ? characters inside single-quoted string literals.
+    """
+    if "?" not in sql:
+        return sql, {}
+
+    param_dict = {}
+    counter = 0
+    new_sql = []
+    in_string = False
+
+    for char in sql:
+        if in_string:
+            new_sql.append(char)
+            if char == "'":
+                in_string = False
+        elif char == "'":
+            in_string = True
+            new_sql.append(char)
+        elif char == "?":
+            key = f"p{counter}"
+            new_sql.append(f":{key}")
+            param_dict[key] = params[counter] if params and counter < len(params) else None
+            counter += 1
+        else:
+            new_sql.append(char)
+
+    return "".join(new_sql), param_dict
+
+
+class CompatCursor:
+    """
+    Returned by CompatConnection.cursor() — provides .execute() for code that
+    uses the cursor pattern: c = conn.cursor(); c.execute(sql, params)
+    """
+
+    def __init__(self, session):
+        self._session = session
+        self._last_result = None
+
+    def execute(self, sql: str, params=None) -> CompatResult:
+        if params is None:
+            params = ()
+        new_sql, param_dict = _convert_placeholders(sql, params)
+        result = self._session.execute(text(new_sql), param_dict)
+        self._last_result = CompatResult(result)
+        return self._last_result
+
+    @property
+    def lastrowid(self):
+        if self._last_result:
+            return self._last_result.lastrowid
+        return None
+
+
+class CompatConnection:
+    """
+    Mimics sqlite3.Connection using SQLAlchemy session underneath.
+    Supports the patterns used throughout main.py:
+      conn = get_db_connection()
+      c = conn.cursor()
+      c.execute(sql, params)
+      conn.execute(sql, params).fetchone()
+      conn.commit()
+      conn.close()
+    """
+
+    def __init__(self):
+        self._session = get_session()
+        self._cursor = None
+
+    def cursor(self) -> CompatCursor:
+        self._cursor = CompatCursor(self._session)
+        return self._cursor
+
+    def execute(self, sql: str, params=None) -> CompatResult:
+        if params is None:
+            params = ()
+        new_sql, param_dict = _convert_placeholders(sql, params)
+        result = self._session.execute(text(new_sql), param_dict)
+        return CompatResult(result)
+
+    def commit(self):
+        self._session.commit()
+
+    def close(self):
+        self._session.close()
+
+
+# ---------------------------------------------------------------------------
+# Public API — same signatures as original db.py
+# ---------------------------------------------------------------------------
+
+def get_db_connection() -> CompatConnection:
+    """Return a CompatConnection that mimics sqlite3.Connection."""
+    return CompatConnection()
+
 
 def init_db():
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ean TEXT NOT NULL,
-            product_name TEXT NOT NULL,
-            brand TEXT,
-            weight TEXT,
-            original_data TEXT,
-            status TEXT DEFAULT 'pending',
-            product_type TEXT,
-            current_step TEXT,
-            classification_result TEXT,
-            search_result TEXT,
-            extraction_result TEXT,
-            validation_result TEXT,
-            enrichment_log TEXT,
-            cost_data TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+    """Initialize database engine and create all tables."""
+    init_engine()
 
-    # Brand COO cache — stores brand → country of origin lookups to avoid
-    # redundant Tavily + Claude calls for repeat brands.
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS brand_coo_cache (
-            brand TEXT PRIMARY KEY COLLATE NOCASE,
-            country_of_origin TEXT NOT NULL,
-            confidence TEXT NOT NULL,
-            source_url TEXT,
-            cached_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
 
-    # Scraped pages cache — stores raw markdown from Firecrawl scrapes
-    # so the gap_fill node can extract missing data without re-scraping.
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS scraped_pages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id INTEGER NOT NULL,
-            url TEXT NOT NULL,
-            source_type TEXT NOT NULL,
-            markdown TEXT,
-            markdown_length INTEGER DEFAULT 0,
-            scrape_success INTEGER DEFAULT 1,
-            extracted INTEGER DEFAULT 0,
-            gap_filled INTEGER DEFAULT 0,
-            scraped_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(product_id, url)
-        )
-    """)
-    c.execute("""
-        CREATE INDEX IF NOT EXISTS idx_scraped_pages_product
-        ON scraped_pages(product_id, source_type)
-    """)
-
-    # Migration: add current_step column if it doesn't exist (for existing DBs)
-    # Migrations for existing DBs
-    for col in ['current_step TEXT', 'cost_data TEXT']:
-        try:
-            c.execute(f"ALTER TABLE products ADD COLUMN {col}")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-
-    conn.commit()
-    conn.close()
-
+# ---------------------------------------------------------------------------
+# Helper: SSE event publishing
+# ---------------------------------------------------------------------------
 
 def _publish_event(product_id: int, event: dict):
     """Publish an SSE event. Thread-safe — event bus handles cross-thread delivery."""
     event_bus.publish_product_event(product_id, event)
 
 
+# ---------------------------------------------------------------------------
+# Helper functions (used by pipeline nodes)
+# ---------------------------------------------------------------------------
+
 def update_step(product_id: int, status: str, step: str):
     """Update the current processing step for a product (real-time UI feedback)."""
-    conn = get_db_connection()
-    conn.execute(
-        "UPDATE products SET status = ?, current_step = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (status, step, product_id)
+    session = get_session()
+    session.execute(
+        text("UPDATE products SET status = :status, current_step = :step, updated_at = :now WHERE id = :id"),
+        {"status": status, "step": step, "now": datetime.utcnow(), "id": product_id}
     )
-    conn.commit()
-    conn.close()
+    session.commit()
+    session.close()
 
     _publish_event(product_id, {
         "type": "status",
@@ -109,13 +216,19 @@ def update_step(product_id: int, status: str, step: str):
 
 def append_log(product_id: int, entry: dict):
     """Append a log entry to the product's enrichment_log."""
-    conn = get_db_connection()
-    product = conn.execute("SELECT enrichment_log FROM products WHERE id = ?", (product_id,)).fetchone()
-    existing = json.loads(product['enrichment_log']) if product and product['enrichment_log'] else []
+    session = get_session()
+    row = session.execute(
+        text("SELECT enrichment_log FROM products WHERE id = :id"),
+        {"id": product_id}
+    ).fetchone()
+    existing = json.loads(row._mapping["enrichment_log"]) if row and row._mapping["enrichment_log"] else []
     existing.append(entry)
-    conn.execute("UPDATE products SET enrichment_log = ? WHERE id = ?", (json.dumps(existing), product_id))
-    conn.commit()
-    conn.close()
+    session.execute(
+        text("UPDATE products SET enrichment_log = :log WHERE id = :id"),
+        {"log": json.dumps(existing), "id": product_id}
+    )
+    session.commit()
+    session.close()
 
     _publish_event(product_id, {
         "type": "log",
@@ -125,71 +238,95 @@ def append_log(product_id: int, entry: dict):
 
 def save_cost_data(product_id: int, cost_summary: dict):
     """Persist the cost tracking summary for a product."""
-    conn = get_db_connection()
-    conn.execute(
-        "UPDATE products SET cost_data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (json.dumps(cost_summary), product_id)
+    session = get_session()
+    session.execute(
+        text("UPDATE products SET cost_data = :data, updated_at = :now WHERE id = :id"),
+        {"data": json.dumps(cost_summary), "now": datetime.utcnow(), "id": product_id}
     )
-    conn.commit()
-    conn.close()
+    session.commit()
+    session.close()
 
 
 def save_scraped_page(product_id: int, url: str, source_type: str, markdown: str | None, success: bool = True):
     """Cache a scraped page's markdown for potential gap-fill use."""
-    conn = get_db_connection()
-    conn.execute("""
-        INSERT OR REPLACE INTO scraped_pages
-        (product_id, url, source_type, markdown, markdown_length, scrape_success, scraped_at)
-        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    """, (product_id, url, source_type, markdown, len(markdown) if markdown else 0, 1 if success else 0))
-    conn.commit()
-    conn.close()
+    session = get_session()
+    ml = len(markdown) if markdown else 0
+    now = datetime.utcnow()
+
+    existing = session.execute(
+        text("SELECT id FROM scraped_pages WHERE product_id = :pid AND url = :url"),
+        {"pid": product_id, "url": url}
+    ).fetchone()
+
+    if existing:
+        session.execute(
+            text("""UPDATE scraped_pages
+                     SET source_type = :st, markdown = :md, markdown_length = :ml,
+                         scrape_success = :ss, scraped_at = :now
+                     WHERE product_id = :pid AND url = :url"""),
+            {"st": source_type, "md": markdown, "ml": ml, "ss": success,
+             "now": now, "pid": product_id, "url": url}
+        )
+    else:
+        session.execute(
+            text("""INSERT INTO scraped_pages
+                     (product_id, url, source_type, markdown, markdown_length, scrape_success, scraped_at)
+                     VALUES (:pid, :url, :st, :md, :ml, :ss, :now)"""),
+            {"pid": product_id, "url": url, "st": source_type, "md": markdown,
+             "ml": ml, "ss": success, "now": now}
+        )
+    session.commit()
+    session.close()
 
 
 def get_scraped_pages(product_id: int, source_type: str | None = None, only_unextracted: bool = False) -> list[dict]:
     """Retrieve cached scraped pages for a product."""
-    conn = get_db_connection()
-    query = "SELECT * FROM scraped_pages WHERE product_id = ? AND scrape_success = 1"
-    params: list = [product_id]
+    session = get_session()
+    # Use 'IS TRUE' to work on both SQLite and PostgreSQL
+    query = "SELECT * FROM scraped_pages WHERE product_id = :pid AND scrape_success IS TRUE"
+    params: dict = {"pid": product_id}
     if source_type:
-        query += " AND source_type = ?"
-        params.append(source_type)
+        query += " AND source_type = :st"
+        params["st"] = source_type
     if only_unextracted:
-        query += " AND extracted = 0 AND gap_filled = 0"
+        query += " AND extracted IS NOT TRUE AND gap_filled IS NOT TRUE"
     query += " ORDER BY id ASC"
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    rows = session.execute(text(query), params).fetchall()
+    session.close()
+    return [dict(r._mapping) for r in rows]
 
 
 def mark_page_extracted(product_id: int, url: str):
     """Mark a scraped page as having gone through main extraction."""
-    conn = get_db_connection()
-    conn.execute(
-        "UPDATE scraped_pages SET extracted = 1 WHERE product_id = ? AND url = ?",
-        (product_id, url)
+    session = get_session()
+    session.execute(
+        text("UPDATE scraped_pages SET extracted = :val WHERE product_id = :pid AND url = :url"),
+        {"val": True, "pid": product_id, "url": url}
     )
-    conn.commit()
-    conn.close()
+    session.commit()
+    session.close()
 
 
 def mark_page_gap_filled(product_id: int, url: str):
     """Mark a scraped page as used for gap filling."""
-    conn = get_db_connection()
-    conn.execute(
-        "UPDATE scraped_pages SET gap_filled = 1 WHERE product_id = ? AND url = ?",
-        (product_id, url)
+    session = get_session()
+    session.execute(
+        text("UPDATE scraped_pages SET gap_filled = :val WHERE product_id = :pid AND url = :url"),
+        {"val": True, "pid": product_id, "url": url}
     )
-    conn.commit()
-    conn.close()
+    session.commit()
+    session.close()
 
 
 def delete_scraped_pages(product_id: int):
     """Delete all cached scraped pages for a product (used on reset)."""
-    conn = get_db_connection()
-    conn.execute("DELETE FROM scraped_pages WHERE product_id = ?", (product_id,))
-    conn.commit()
-    conn.close()
+    session = get_session()
+    session.execute(
+        text("DELETE FROM scraped_pages WHERE product_id = :pid"),
+        {"pid": product_id}
+    )
+    session.commit()
+    session.close()
 
 
 if __name__ == "__main__":

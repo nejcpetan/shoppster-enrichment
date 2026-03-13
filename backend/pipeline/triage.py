@@ -22,9 +22,12 @@ async def triage_node(state: dict) -> dict:
     product_id = state["product_id"]
     cost_tracker = state.get("cost_tracker")
 
+    from config import get_config
+    cfg = get_config()
+
     logger.info(f"[Product {product_id}] ▶ TRIAGE — Starting classification")
     update_step(product_id, "classifying", "Parsing product name...")
-    
+
     # Load product
     conn = get_db_connection()
     product = conn.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
@@ -37,7 +40,9 @@ async def triage_node(state: dict) -> dict:
     logger.info(f"[Product {product_id}]   Product: {product['product_name']} (EAN: {product['ean']})")
 
     # Build prompt
-    system_prompt = """You are a product classification expert for a data enrichment pipeline.
+    brands_str = ", ".join(cfg.brands.known_brands[:15])
+
+    system_prompt = f"""You are a product classification expert for a data enrichment pipeline.
 
 Given a product name (often in Slovenian), EAN code, and any existing data:
 1. PARSE the product name to extract: brand, model number, color hints, size hints
@@ -56,7 +61,7 @@ PRODUCT TYPE RULES:
 - other: If nothing else fits.
 
 BRAND DETECTION:
-- Look for known brands in the product name (Texas, Makita, Bosch, DeWalt, Valvoline, etc.)
+- Look for known brands in the product name ({brands_str}, etc.)
 - brand_confidence: "certain" if brand is explicitly stated, "likely" if inferred, "unknown" if can't determine"""
 
     user_prompt = f"""Product Name: {product['product_name']}
@@ -72,7 +77,7 @@ Existing Weight: {product.get('weight', 'None')}"""
             prompt=user_prompt,
             system=system_prompt,
             schema=ProductClassification,
-            model="haiku",
+            model=cfg.llm.triage_model,
             return_usage=True
         )
 

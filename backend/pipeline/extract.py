@@ -278,6 +278,9 @@ async def extract_node(state: dict) -> dict:
     product_id = state["product_id"]
     cost_tracker = state.get("cost_tracker")
 
+    from config import get_config
+    cfg = get_config()
+
     update_step(product_id, "extracting", "Loading search results...")
 
     # Load context
@@ -305,10 +308,14 @@ async def extract_node(state: dict) -> dict:
     third_party_urls = [r for r in all_results_filtered if r['source_type'] == 'third_party']
 
     # Main extraction targets (LLM calls)
-    urls_to_process = manufacturer_urls[:2] + authorized_urls[:3]
-
-    # Scrape-only targets (cached for gap fill, no LLM calls)
-    urls_to_cache_only = third_party_urls[:3]
+    if cfg.source.trust_third_party_as_primary:
+        # Merkur mode: include third-party in main extraction loop too
+        urls_to_process = (manufacturer_urls[:2] + authorized_urls[:3] + third_party_urls[:cfg.pipeline.max_gap_fill_pages])[:cfg.pipeline.max_pages_to_scrape]
+        urls_to_cache_only = []
+    else:
+        # Shoppster mode: manufacturer + authorized for extraction, cache third-party for gap fill
+        urls_to_process = (manufacturer_urls[:2] + authorized_urls[:3])[:cfg.pipeline.max_pages_to_scrape]
+        urls_to_cache_only = third_party_urls[:cfg.pipeline.max_gap_fill_pages]
 
     if not urls_to_process:
         # Fallback: if classification was poor and nothing is manufacturer/authorized, take top 3
@@ -453,7 +460,7 @@ Also extract:
                     prompt=pass1_user,
                     system=extraction_preamble,
                     schema=DimensionsExtraction,
-                    model="haiku",
+                    model=cfg.llm.extract_model,
                     return_usage=True,
                     cached_content=page_content,
                     max_tokens=4096,
@@ -546,7 +553,7 @@ RULES:
                     prompt=pass2_user,
                     system=extraction_preamble,
                     schema=ContentExtraction,
-                    model="haiku",
+                    model=cfg.llm.extract_model,
                     return_usage=True,
                     cached_content=page_content,
                     max_tokens=4096,  # Reduced: descriptions use markers now, not full text
@@ -791,7 +798,7 @@ RULES:
         if merged.image_url and merged.image_url.value:
             image_for_color = str(merged.image_url.value)
 
-        if image_for_color:
+        if image_for_color and cfg.pipeline.enable_gemini_vision:
             logger.info(f"[Product {product_id}]   🔍 Calling Gemini Vision for color detection...")
             update_step(product_id, "extracting", "🔍 Gemini Vision: detecting color...")
             color_result = _fill_color_gemini(image_for_color, product_id, cost_tracker)
@@ -1427,11 +1434,13 @@ Return the country name in English.
 If you find it, set confidence to "third_party" if from a reliable source, "inferred" if guessing from brand info.
 If you cannot determine, return value as null."""
 
+        from config import get_config as _get_config
+        _cfg = _get_config()
         result, usage = classify_with_schema(
             prompt=f"Brand: {brand}\nEAN: {ean}\n\nSearch results:\n{snippets}",
             system=system_prompt,
             schema=EnrichedField,
-            model="haiku",
+            model=_cfg.llm.extract_model,
             return_usage=True
         )
 

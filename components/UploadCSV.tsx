@@ -48,10 +48,19 @@ export function UploadCSV({ onUploadSuccess }: { onUploadSuccess: () => void }) 
         formData.append("file", file);
 
         try {
+            const token = localStorage.getItem("enrichment_token");
             const res = await fetch("http://localhost:8000/api/upload", {
                 method: "POST",
+                headers: token ? { "Authorization": `Bearer ${token}` } : {},
                 body: formData,
             });
+
+            if (res.status === 401) {
+                localStorage.removeItem("enrichment_token");
+                localStorage.removeItem("enrichment_user");
+                window.location.href = "/login";
+                return;
+            }
 
             if (!res.ok) throw new Error("Upload failed");
 

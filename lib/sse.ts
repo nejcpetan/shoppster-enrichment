@@ -2,6 +2,11 @@ import { useEffect, useRef, useCallback } from "react";
 
 const SSE_BASE = "http://localhost:8000/api/events";
 
+function sseUrl(path: string): string {
+  const token = typeof window !== "undefined" ? localStorage.getItem("enrichment_token") : null;
+  return token ? `${SSE_BASE}${path}?token=${encodeURIComponent(token)}` : `${SSE_BASE}${path}`;
+}
+
 const TERMINAL_STATUSES = ["done", "error", "needs_review"];
 const RECONNECT_DELAY = 3000;
 
@@ -40,7 +45,7 @@ export function useProductStream({
 
     function connect() {
       if (closed) return;
-      es = new EventSource(`${SSE_BASE}/products/${productId}`);
+      es = new EventSource(sseUrl(`/products/${productId}`));
 
       const handleStatusEvent = (e: MessageEvent) => {
         try {
@@ -111,7 +116,7 @@ export function useProductsStream({
 
     function connect() {
       if (closed) return;
-      es = new EventSource(`${SSE_BASE}/products`);
+      es = new EventSource(sseUrl(`/products`));
 
       es.addEventListener("status", (e: MessageEvent) => {
         try {

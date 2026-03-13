@@ -11,6 +11,7 @@ Unified schema architecture with clearly separated output segments:
 
 from pydantic import BaseModel, Field
 from typing import Literal, Optional, List, Dict, Any
+from datetime import datetime
 
 
 # ─── Core Building Block ──────────────────────────────────────────────────────
@@ -246,7 +247,7 @@ class ProductBase(BaseModel):
 
 class ProductResponse(ProductBase):
     id: int
-    status: str
+    status: Optional[str] = "pending"
     product_type: Optional[str] = None
     current_step: Optional[str] = None
     classification_result: Optional[str] = None
@@ -255,8 +256,8 @@ class ProductResponse(ProductBase):
     validation_result: Optional[str] = None
     enrichment_log: Optional[str] = None
     cost_data: Optional[str] = None
-    created_at: str
-    updated_at: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

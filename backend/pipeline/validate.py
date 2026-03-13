@@ -119,6 +119,13 @@ async def validate_node(state: dict) -> dict:
     product_id = state["product_id"]
     cost_tracker = state.get("cost_tracker")
 
+    from config import get_config
+    cfg = get_config()
+
+    # Merge config-provided extra color/country mappings with platform defaults
+    merged_colors = {**MULTILANG_COLORS, **cfg.language.extra_color_mappings}
+    merged_countries = {**COUNTRY_NAME_MAP, **cfg.language.extra_country_mappings}
+
     logger.info(f"[Product {product_id}] ▶ VALIDATE — Normalizing and checking data")
     update_step(product_id, "validating", "Loading extracted data...")
 
@@ -163,7 +170,7 @@ async def validate_node(state: dict) -> dict:
 
     # ── Deterministic corrections ─────────────────────────────────────────
     update_step(product_id, "validating", "Applying data corrections...")
-    corrections = _apply_corrections(normalized_model)
+    corrections = _apply_corrections(normalized_model, merged_colors, merged_countries)
 
     if corrections:
         logger.info(f"[Product {product_id}]   Applied {len(corrections)} correction(s)")
@@ -213,7 +220,7 @@ Check this data for quality issues."""
             prompt=user_prompt,
             system=system_prompt,
             schema=ValidationReport,
-            model="haiku",
+            model=cfg.llm.validate_model,
             return_usage=True
         )
 
@@ -275,20 +282,22 @@ Check this data for quality issues."""
     return {}
 
 
-def _normalize_color(raw: str) -> str | None:
+def _normalize_color(raw: str, color_map: dict[str, str] | None = None) -> str | None:
     """Map non-English color names to English. Returns None if no mapping found."""
-    return MULTILANG_COLORS.get(raw.strip().lower())
+    lookup = color_map if color_map is not None else MULTILANG_COLORS
+    return lookup.get(raw.strip().lower())
 
 
-def _normalize_country(raw: str) -> str | None:
+def _normalize_country(raw: str, country_map: dict[str, str] | None = None) -> str | None:
     """
     Normalize country of origin strings.
     Strips common prefixes ("Made in Germany" → "Germany"),
     then maps to a standard English country name.
     Returns None if no change is needed.
     """
+    lookup = country_map if country_map is not None else COUNTRY_NAME_MAP
     stripped = COUNTRY_PREFIX_RE.sub('', raw).strip()
-    mapped = COUNTRY_NAME_MAP.get(stripped.lower())
+    mapped = lookup.get(stripped.lower())
     if mapped:
         return mapped
     # Return the stripped version if prefix was removed but name is unrecognised
@@ -302,10 +311,15 @@ def _is_junk(val: str) -> bool:
     return val.strip().lower() in JUNK_VALUES or len(val.strip()) <= 1
 
 
-def _apply_corrections(model: EnrichedProduct) -> list[str]:
+def _apply_corrections(
+    model: EnrichedProduct,
+    color_map: dict[str, str] | None = None,
+    country_map: dict[str, str] | None = None,
+) -> list[str]:
     """
     Apply deterministic, zero-cost corrections to the enriched product model in-place.
     Returns a list of human-readable correction descriptions for the log.
+    Accepts optional merged color/country maps from config.
     """
     corrections: list[str] = []
 
@@ -317,7 +331,7 @@ def _apply_corrections(model: EnrichedProduct) -> list[str]:
             model.color.value = None
             model.color.confidence = "not_found"
         else:
-            mapped = _normalize_color(raw)
+            mapped = _normalize_color(raw, color_map)
             if mapped:
                 corrections.append(f"color: '{raw}' → '{mapped}' (language normalization)")
                 model.color.value = mapped
@@ -332,7 +346,7 @@ def _apply_corrections(model: EnrichedProduct) -> list[str]:
             model.country_of_origin.value = None
             model.country_of_origin.confidence = "not_found"
         else:
-            normalized = _normalize_country(raw)
+            normalized = _normalize_country(raw, country_map)
             if normalized:
                 corrections.append(f"country_of_origin: '{raw}' → '{normalized}'")
                 model.country_of_origin.value = normalized

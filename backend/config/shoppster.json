@@ -1,0 +1,64 @@
+{
+    "company_name": "Shoppster",
+    "company_slug": "shoppster",
+    "source": {
+        "strategy": "official_first",
+        "search_provider": "tavily",
+        "max_manufacturer_results": 5,
+        "max_general_results": 7,
+        "max_general_queries": 3,
+        "max_total_results": 6,
+        "allowed_domains": [],
+        "blocked_domains": [],
+        "trust_third_party_as_primary": false
+    },
+    "pipeline": {
+        "enable_ean_lookup": true,
+        "enable_gap_fill": true,
+        "enable_gemini_vision": true,
+        "max_pages_to_scrape": 5,
+        "max_gap_fill_pages": 3,
+        "gap_fill_is_primary": false
+    },
+    "critical_fields": {
+        "net_weight": true,
+        "packaged_weight": true,
+        "packaged_dims": true,
+        "warranty": true,
+        "short_description": true,
+        "color": false,
+        "country_of_origin": false
+    },
+    "language": {
+        "primary_languages": ["sl", "en"],
+        "output_language": "en",
+        "extra_color_mappings": {},
+        "extra_country_mappings": {}
+    },
+    "cost": {
+        "max_daily_cost_usd": 50.0,
+        "daily_product_limit": 200,
+        "max_batch_size": 50,
+        "market_region": ""
+    },
+    "llm": {
+        "triage_model": "haiku",
+        "search_model": "haiku",
+        "extract_model": "haiku",
+        "gap_fill_model": "haiku",
+        "validate_model": "haiku"
+    },
+    "brands": {
+        "known_brands": [
+            "Texas", "Makita", "Bosch", "DeWalt", "Valvoline", "Husqvarna",
+            "Stihl", "Kärcher", "Metabo", "Milwaukee", "Ryobi", "Black+Decker",
+            "Einhell", "Gardena", "Fiskars"
+        ],
+        "brand_coo_seeds": {}
+    },
+    "export": {
+        "include_cost_data": false,
+        "include_enrichment_log": false,
+        "column_overrides": {}
+    }
+}

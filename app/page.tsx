@@ -4,11 +4,13 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { UploadCSV } from "@/components/UploadCSV";
 import { ProductTable } from "@/components/ProductTable";
+import { AuthGuard } from "@/components/AuthGuard";
+import { UserMenu } from "@/components/UserMenu";
 import { Button } from "@/components/ui/button";
 import {
-  Search, Filter, Download, Layers,
-  Zap, MoreHorizontal, RefreshCw, CheckCircle2,
-  AlertCircle, Clock, Loader2, AlertTriangle, Activity
+  Download, Layers,
+  Zap, RefreshCw, CheckCircle2,
+  AlertCircle, Clock, Loader2, AlertTriangle,
 } from "lucide-react";
 import { fetchAPI } from "@/lib/api";
 
@@ -70,7 +72,11 @@ export default function Home() {
   };
 
   const handleExport = () => {
-    window.open('http://localhost:8000/api/export', '_blank');
+    const token = localStorage.getItem("enrichment_token");
+    const url = token
+      ? `http://localhost:8000/api/export?token=${encodeURIComponent(token)}`
+      : 'http://localhost:8000/api/export';
+    window.open(url, '_blank');
   };
 
   const statCards = [
@@ -83,6 +89,7 @@ export default function Home() {
   ];
 
   return (
+    <AuthGuard>
     <div className="h-screen bg-black text-zinc-100 font-sans selection:bg-purple-500/30 flex flex-col overflow-hidden">
       {/* Top Navigation Bar */}
       <nav className="border-b border-zinc-800 bg-black/80 backdrop-blur-md sticky top-0 z-50 shrink-0">
@@ -103,22 +110,8 @@ export default function Home() {
               <Download className="w-4 h-4 mr-2" />
               Export Data
             </Button>
-            <Link href="/analytics">
-              <Button
-                variant="outline"
-                size="sm"
-                className="border-zinc-800 bg-zinc-900/50 hover:bg-zinc-800 text-zinc-400 hover:text-white transition-all"
-              >
-                <Activity className="w-4 h-4 mr-2" />
-                Analytics
-              </Button>
-            </Link>
             <div className="h-6 w-px bg-zinc-800 mx-2"></div>
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center border border-zinc-700">
-                <span className="text-xs font-bold">JD</span>
-              </div>
-            </div>
+            <UserMenu />
           </div>
         </div>
       </nav>
@@ -182,5 +175,6 @@ export default function Home() {
         </section>
       </main>
     </div>
+    </AuthGuard>
   );
 }

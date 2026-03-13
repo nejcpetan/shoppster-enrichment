@@ -49,18 +49,37 @@ PRICING = {
 
 # ─── Configurable Guardrail Limits ────────────────────────────────────────────
 # These are module-level so they can be updated at runtime via API.
-# Defaults come from env vars, falling back to sensible values.
+# Initialized from config on first access; falls back to env vars if config not loaded.
 
-_limits = {
-    "daily_product_limit": int(os.getenv("DAILY_PRODUCT_LIMIT", "200")),
-    "max_batch_size": int(os.getenv("MAX_BATCH_SIZE", "50")),
-    "max_daily_cost_usd": float(os.getenv("MAX_DAILY_COST_USD", "50.0")),
-    "market_region": os.getenv("MARKET_REGION", ""),
-}
+_limits: dict | None = None
+
+
+def _init_limits():
+    """Initialize limits from config. Falls back to env vars if config not loaded yet."""
+    global _limits
+    try:
+        from config import get_config
+        cfg = get_config()
+        _limits = {
+            "daily_product_limit": cfg.cost.daily_product_limit,
+            "max_batch_size": cfg.cost.max_batch_size,
+            "max_daily_cost_usd": cfg.cost.max_daily_cost_usd,
+            "market_region": cfg.cost.market_region,
+        }
+    except RuntimeError:
+        # Config not loaded yet — use env vars as fallback
+        _limits = {
+            "daily_product_limit": int(os.getenv("DAILY_PRODUCT_LIMIT", "200")),
+            "max_batch_size": int(os.getenv("MAX_BATCH_SIZE", "50")),
+            "max_daily_cost_usd": float(os.getenv("MAX_DAILY_COST_USD", "50.0")),
+            "market_region": os.getenv("MARKET_REGION", ""),
+        }
 
 
 def get_limits() -> dict:
     """Return current guardrail limits."""
+    if _limits is None:
+        _init_limits()
     return dict(_limits)
 
 
@@ -70,6 +89,8 @@ def set_limits(new_limits: dict) -> dict:
     Only updates keys that are present in new_limits and valid.
     Returns the updated limits.
     """
+    if _limits is None:
+        _init_limits()
     for key in ("daily_product_limit", "max_batch_size", "max_daily_cost_usd"):
         if key in new_limits and new_limits[key] is not None:
             val = new_limits[key]

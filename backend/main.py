@@ -1,4 +1,7 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from dotenv import load_dotenv
+load_dotenv()
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import pandas as pd
@@ -12,12 +15,15 @@ from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel
 from db import get_db_connection, init_db, update_step
+from config import load_config
 from schemas import ProductResponse
 from graph import enrichment_pipeline, ProductState
 from events import event_bus, format_sse
 from utils.cost_tracker import (
     check_can_process, get_daily_stats, get_limits, set_limits
 )
+from auth import auth_router, get_current_user, require_admin
+from settings.router import router as settings_router
 
 # --- Logging ---
 logging.basicConfig(
@@ -35,6 +41,12 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logger = logging.getLogger("pipeline.api")
 
 app = FastAPI(title="Product Enrichment Engine", version="2.0")
+
+# Auth router (no auth required on /api/auth/login itself)
+app.include_router(auth_router)
+
+# Settings router (GET: any logged-in user; PUT/DELETE: admin only)
+app.include_router(settings_router)
 
 # CORS
 app.add_middleware(
@@ -60,6 +72,7 @@ class LimitsUpdateRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
+    load_config()  # Load company.json — must be first
     init_db()
     # Register main event loop with event bus for thread-safe SSE delivery
     event_bus.set_loop(asyncio.get_running_loop())
@@ -92,7 +105,7 @@ def _publish_final_status(product_id: int):
 # --- Upload ---
 
 @app.post("/api/upload")
-async def upload_products(file: UploadFile = File(...)):
+async def upload_products(file: UploadFile = File(...), user: dict = Depends(require_admin)):
     if not file.filename.endswith(('.csv', '.xlsx')):
         raise HTTPException(status_code=400, detail="Invalid file format")
 
@@ -133,7 +146,7 @@ async def upload_products(file: UploadFile = File(...)):
 # --- Manual Add ---
 
 @app.post("/api/products/add")
-async def add_product_manually(req: ManualProductRequest):
+async def add_product_manually(req: ManualProductRequest, user: dict = Depends(require_admin)):
     ean = req.ean.strip()
     name = req.product_name.strip()
 
@@ -154,7 +167,7 @@ async def add_product_manually(req: ManualProductRequest):
 # --- Product Listing ---
 
 @app.get("/api/products", response_model=List[ProductResponse])
-def get_products():
+def get_products(user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     products = conn.execute("SELECT * FROM products ORDER BY id DESC").fetchall()
     conn.close()
@@ -163,7 +176,7 @@ def get_products():
 # --- SSE Endpoints ---
 
 @app.get("/api/events/products")
-async def sse_products():
+async def sse_products(user: dict = Depends(get_current_user)):
     """Global SSE stream — emits status/log events for all products."""
     async def event_generator():
         queue = event_bus.subscribe("products")
@@ -194,7 +207,7 @@ async def sse_products():
 
 
 @app.get("/api/events/products/{product_id}")
-async def sse_product(product_id: int):
+async def sse_product(product_id: int, user: dict = Depends(get_current_user)):
     """Per-product SSE stream — emits status/log events for a single product."""
     async def event_generator():
         # Send initial snapshot
@@ -329,7 +342,7 @@ def process_batch(product_ids: List[int]):
 # --- Static sub-paths FIRST (before parameterized {id} routes) ---
 
 @app.post("/api/products/process-all")
-async def process_all_products(background_tasks: BackgroundTasks):
+async def process_all_products(background_tasks: BackgroundTasks, user: dict = Depends(require_admin)):
     conn = get_db_connection()
     rows = conn.execute("SELECT id FROM products WHERE status IN ('pending', 'needs_review')").fetchall()
     product_ids = [row['id'] for row in rows]
@@ -369,7 +382,7 @@ async def process_all_products(background_tasks: BackgroundTasks):
     return {"message": f"Started processing {len(product_ids)} products"}
 
 @app.post("/api/products/process-batch")
-async def process_batch_products(request: BatchProcessRequest, background_tasks: BackgroundTasks):
+async def process_batch_products(request: BatchProcessRequest, background_tasks: BackgroundTasks, user: dict = Depends(require_admin)):
     if not request.product_ids:
         return {"message": "No product IDs provided"}
 
@@ -402,7 +415,7 @@ async def process_batch_products(request: BatchProcessRequest, background_tasks:
 # --- Parameterized routes AFTER static ones ---
 
 @app.get("/api/products/{id}", response_model=ProductResponse)
-def get_product(id: int):
+def get_product(id: int, user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     product = conn.execute("SELECT * FROM products WHERE id = ?", (id,)).fetchone()
     conn.close()
@@ -413,7 +426,7 @@ def get_product(id: int):
     return dict(product)
 
 @app.post("/api/products/{id}/enrich")
-async def enrich_product(id: int, background_tasks: BackgroundTasks):
+async def enrich_product(id: int, background_tasks: BackgroundTasks, user: dict = Depends(require_admin)):
     # Set status immediately — fixes race condition
     conn = get_db_connection()
     conn.execute(
@@ -432,7 +445,7 @@ async def enrich_product(id: int, background_tasks: BackgroundTasks):
     return {"message": "Enrichment started"}
 
 @app.post("/api/products/{id}/classify")
-async def trigger_classify(id: int, background_tasks: BackgroundTasks):
+async def trigger_classify(id: int, background_tasks: BackgroundTasks, user: dict = Depends(require_admin)):
     """Run Phase 1 (Triage) only."""
     # Set status immediately
     conn = get_db_connection()
@@ -459,7 +472,7 @@ async def trigger_classify(id: int, background_tasks: BackgroundTasks):
     return {"message": "Classification started"}
 
 @app.post("/api/products/{id}/search")
-async def trigger_search(id: int, background_tasks: BackgroundTasks):
+async def trigger_search(id: int, background_tasks: BackgroundTasks, user: dict = Depends(require_admin)):
     # Set status immediately
     conn = get_db_connection()
     conn.execute(
@@ -485,7 +498,7 @@ async def trigger_search(id: int, background_tasks: BackgroundTasks):
     return {"message": "Search started"}
 
 @app.post("/api/products/{id}/extract")
-async def trigger_extract(id: int, background_tasks: BackgroundTasks):
+async def trigger_extract(id: int, background_tasks: BackgroundTasks, user: dict = Depends(require_admin)):
     # Set status immediately
     conn = get_db_connection()
     conn.execute(
@@ -511,7 +524,7 @@ async def trigger_extract(id: int, background_tasks: BackgroundTasks):
     return {"message": "Extraction started"}
 
 @app.post("/api/products/{id}/validate")
-async def trigger_validate(id: int, background_tasks: BackgroundTasks):
+async def trigger_validate(id: int, background_tasks: BackgroundTasks, user: dict = Depends(require_admin)):
     # Set status immediately
     conn = get_db_connection()
     conn.execute(
@@ -537,7 +550,7 @@ async def trigger_validate(id: int, background_tasks: BackgroundTasks):
     return {"message": "Validation started"}
 
 @app.post("/api/products/{id}/reset")
-async def reset_product(id: int):
+async def reset_product(id: int, user: dict = Depends(require_admin)):
     conn = get_db_connection()
     product = conn.execute("SELECT * FROM products WHERE id = ?", (id,)).fetchone()
     if not product:
@@ -567,7 +580,7 @@ async def reset_product(id: int):
     return {"message": f"Product {id} reset to pending"}
 
 @app.get("/api/products/{id}/export")
-def export_single_product(id: int):
+def export_single_product(id: int, user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     product = conn.execute("SELECT * FROM products WHERE id = ?", (id,)).fetchone()
     conn.close()
@@ -592,7 +605,7 @@ def export_single_product(id: int):
 # --- Dashboard ---
 
 @app.get("/api/dashboard/stats")
-def get_dashboard_stats():
+def get_dashboard_stats(user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     total = conn.execute("SELECT COUNT(*) as c FROM products").fetchone()['c']
     pending = conn.execute("SELECT COUNT(*) as c FROM products WHERE status = 'pending'").fetchone()['c']
@@ -608,19 +621,19 @@ def get_dashboard_stats():
 
 
 @app.get("/api/dashboard/costs")
-def get_cost_stats():
+def get_cost_stats(user: dict = Depends(get_current_user)):
     """Return daily cost stats, all-time aggregates, and current guardrail limits."""
     return get_daily_stats()
 
 
 @app.get("/api/dashboard/limits")
-def get_guardrail_limits():
+def get_guardrail_limits(user: dict = Depends(get_current_user)):
     """Return current guardrail limits."""
     return get_limits()
 
 
 @app.put("/api/dashboard/limits")
-def update_guardrail_limits(request: LimitsUpdateRequest):
+def update_guardrail_limits(request: LimitsUpdateRequest, user: dict = Depends(require_admin)):
     """Update guardrail limits at runtime (from the UI)."""
     updated = set_limits(request.model_dump(exclude_none=True))
     return {"message": "Limits updated", "limits": updated}
@@ -628,7 +641,7 @@ def update_guardrail_limits(request: LimitsUpdateRequest):
 # --- Export All ---
 
 @app.get("/api/export")
-def export_products():
+def export_products(user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     products = conn.execute("SELECT * FROM products").fetchall()
     conn.close()
@@ -754,4 +767,4 @@ def _build_export_row(row: dict) -> dict:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, timeout_graceful_shutdown=0)

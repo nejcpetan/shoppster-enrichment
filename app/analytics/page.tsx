@@ -3,10 +3,12 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { fetchAPI } from "@/lib/api";
+import { AuthGuard } from "@/components/AuthGuard";
+import { UserMenu } from "@/components/UserMenu";
 import { Button } from "@/components/ui/button";
 import {
     ArrowLeft, DollarSign, Zap, TrendingUp, Shield,
-    RefreshCw, Save, Activity, Database, Cpu, ChevronRight,
+    RefreshCw, Save, Activity, Database, Cpu,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -126,13 +128,16 @@ export default function AnalyticsPage() {
 
     if (loading) {
         return (
+            <AuthGuard>
             <div className="h-screen bg-black text-zinc-100 flex items-center justify-center">
                 <RefreshCw className="w-6 h-6 animate-spin text-zinc-500" />
             </div>
+            </AuthGuard>
         );
     }
 
     return (
+        <AuthGuard>
         <div className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-purple-500/30">
             {/* Navigation */}
             <nav className="border-b border-zinc-800 bg-black/80 backdrop-blur-md sticky top-0 z-50">
@@ -154,15 +159,18 @@ export default function AnalyticsPage() {
                             Cost Analytics
                         </h1>
                     </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={loadData}
-                        className="border-zinc-800 bg-zinc-900/50 hover:bg-zinc-800 text-zinc-400 hover:text-white transition-all"
-                    >
-                        <RefreshCw className="w-4 h-4 mr-2" />
-                        Refresh
-                    </Button>
+                    <div className="flex items-center gap-3">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={loadData}
+                            className="border-zinc-800 bg-zinc-900/50 hover:bg-zinc-800 text-zinc-400 hover:text-white transition-all"
+                        >
+                            <RefreshCw className="w-4 h-4 mr-2" />
+                            Refresh
+                        </Button>
+                        <UserMenu />
+                    </div>
                 </div>
             </nav>
 
@@ -413,6 +421,7 @@ export default function AnalyticsPage() {
                 )}
             </main>
         </div>
+        </AuthGuard>
     );
 }
 

@@ -59,12 +59,21 @@ CRITICAL_GAP_CHECKS = {
 
 
 def _identify_gaps(model: EnrichedProduct) -> list[str]:
-    """Return list of critical gap names that are missing."""
+    """Return list of critical gap names that are missing (uses all checks)."""
     gaps = []
     for gap_name, check_fn in CRITICAL_GAP_CHECKS.items():
         if check_fn(model):
             gaps.append(gap_name)
     return gaps
+
+
+def _get_active_gap_checks(cfg_fields) -> dict:
+    """Return only the gap checks that are enabled in config."""
+    active = {}
+    for name, check_fn in CRITICAL_GAP_CHECKS.items():
+        if getattr(cfg_fields, name, False):
+            active[name] = check_fn
+    return active
 
 
 def _build_gap_fill_prompt(gaps: list[str], confidence_level: str, url: str) -> str:
@@ -215,6 +224,9 @@ async def gap_fill_node(state: dict) -> dict:
     product_id = state["product_id"]
     cost_tracker = state.get("cost_tracker")
 
+    from config import get_config
+    cfg = get_config()
+
     update_step(product_id, "gap_filling", "Checking for critical data gaps...")
 
     # Load current extraction result
@@ -234,8 +246,9 @@ async def gap_fill_node(state: dict) -> dict:
     model = EnrichedProduct.model_validate(extraction_data)
     classification = ProductClassification.model_validate_json(product['classification_result'])
 
-    # Step 1: Identify critical gaps
-    gaps = _identify_gaps(model)
+    # Step 1: Identify critical gaps (filtered by config)
+    active_checks = _get_active_gap_checks(cfg.critical_fields)
+    gaps = [name for name, check_fn in active_checks.items() if check_fn(model)]
 
     if not gaps:
         logger.info(f"[Product {product_id}]   No critical gaps found, skipping gap fill")
@@ -287,7 +300,7 @@ You will receive scraped third-party page content and instructions to extract sp
 All extracted text (descriptions, features, specs, warranty terms) MUST be in English. Translate if needed. Do NOT translate brand names, model numbers, or proper nouns.
 If a field is not found on the page, leave it as the default (null/empty)."""
 
-    for page in third_party_pages:
+    for page in third_party_pages[:cfg.pipeline.max_gap_fill_pages]:
         url = page['url']
         markdown = page['markdown']
 
@@ -313,7 +326,7 @@ If a field is not found on the page, leave it as the default (null/empty)."""
                 prompt=user_message,
                 system=gap_fill_system,
                 schema=GapFillExtraction,
-                model="haiku",
+                model=cfg.llm.gap_fill_model,
                 return_usage=True,
                 max_tokens=2048,
             )

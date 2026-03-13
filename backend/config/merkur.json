@@ -1,0 +1,71 @@
+{
+    "company_name": "Merkur",
+    "company_slug": "merkur",
+    "source": {
+        "strategy": "any_source",
+        "search_provider": "tavily",
+        "max_manufacturer_results": 5,
+        "max_general_results": 10,
+        "max_general_queries": 4,
+        "max_total_results": 10,
+        "allowed_domains": [],
+        "blocked_domains": [],
+        "trust_third_party_as_primary": true
+    },
+    "pipeline": {
+        "enable_ean_lookup": true,
+        "enable_gap_fill": true,
+        "enable_gemini_vision": true,
+        "max_pages_to_scrape": 7,
+        "max_gap_fill_pages": 7,
+        "gap_fill_is_primary": true
+    },
+    "critical_fields": {
+        "net_weight": true,
+        "packaged_weight": true,
+        "packaged_dims": true,
+        "warranty": true,
+        "short_description": true,
+        "color": true,
+        "country_of_origin": true
+    },
+    "language": {
+        "primary_languages": ["sl", "de", "en"],
+        "output_language": "en",
+        "extra_color_mappings": {
+            "türkis": "turquoise",
+            "beige": "beige",
+            "rosa": "pink",
+            "dunkelblau": "dark blue",
+            "hellgrau": "light gray",
+            "anthrazit": "anthracite"
+        },
+        "extra_country_mappings": {}
+    },
+    "cost": {
+        "max_daily_cost_usd": 50.0,
+        "daily_product_limit": 200,
+        "max_batch_size": 50,
+        "market_region": "Slovenia"
+    },
+    "llm": {
+        "triage_model": "haiku",
+        "search_model": "haiku",
+        "extract_model": "haiku",
+        "gap_fill_model": "haiku",
+        "validate_model": "haiku"
+    },
+    "brands": {
+        "known_brands": [
+            "Bosch", "Makita", "DeWalt", "Metabo", "Kärcher", "Stihl",
+            "Husqvarna", "Gardena", "Fiskars", "Weber", "Vileda",
+            "Leifheit", "Tefal", "Philips", "Braun"
+        ],
+        "brand_coo_seeds": {}
+    },
+    "export": {
+        "include_cost_data": false,
+        "include_enrichment_log": false,
+        "column_overrides": {}
+    }
+}

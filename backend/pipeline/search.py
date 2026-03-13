@@ -38,6 +38,9 @@ async def search_node(state: dict) -> dict:
     product_id = state["product_id"]
     cost_tracker = state.get("cost_tracker")
 
+    from config import get_config
+    cfg = get_config()
+
     logger.info(f"[Product {product_id}] ▶ SEARCH — Finding product pages")
     update_step(product_id, "searching", "Loading product data...")
 
@@ -60,7 +63,7 @@ async def search_node(state: dict) -> dict:
     product_type = classification.get('product_type', '')
     manufacturer_domain = classification.get('manufacturer_domain')
     ean = product['ean']
-    market_region = get_limits().get("market_region", "")
+    market_region = cfg.cost.market_region
 
     # Build general search queries (append market region if configured)
     region_suffix = f" {market_region}" if market_region else ""
@@ -83,7 +86,7 @@ async def search_node(state: dict) -> dict:
         mfr_query = f"{product['product_name']} {ean}"
 
     # Determine search provider
-    search_provider = os.getenv("SEARCH_PROVIDER", "tavily").lower()
+    search_provider = cfg.source.search_provider
 
     all_results = []
 
@@ -96,13 +99,13 @@ async def search_node(state: dict) -> dict:
         client = TavilyClient(api_key=tavily_key)
 
         # ── Phase 1: Manufacturer-targeted search ──────────────────────────
-        if manufacturer_domain:
+        if manufacturer_domain and cfg.source.strategy != "any_source":
             update_step(product_id, "searching", f"Searching manufacturer site: {manufacturer_domain}...")
             try:
                 logger.info(f"[Product {product_id}]   Phase 1 (manufacturer): '{mfr_query}' on {manufacturer_domain}")
                 mfr_response = client.search(
                     query=mfr_query,
-                    max_results=5,
+                    max_results=cfg.source.max_manufacturer_results,
                     include_domains=[manufacturer_domain]
                 )
                 mfr_results = mfr_response.get('results', [])
@@ -129,12 +132,15 @@ async def search_node(state: dict) -> dict:
 
         # ── Phase 2: General search ────────────────────────────────────────
         # Reduce general queries if Phase 1 already found results
-        max_general_queries = 2 if (manufacturer_domain and all_results) else 3
+        if cfg.source.strategy == "any_source":
+            max_general_queries = cfg.source.max_general_queries
+        else:
+            max_general_queries = 2 if (manufacturer_domain and all_results) else cfg.source.max_general_queries
         for q in queries[:max_general_queries]:
             update_step(product_id, "searching", f"Searching (Tavily): {q[:50]}...")
             try:
                 logger.info(f"[Product {product_id}]   Phase 2 (general): '{q}'")
-                response = client.search(query=q, max_results=7)
+                response = client.search(query=q, max_results=cfg.source.max_general_results)
                 num_results = len(response.get('results', []))
                 logger.info(f"[Product {product_id}]   → {num_results} results")
                 all_results.extend(response.get('results', []))
@@ -151,7 +157,7 @@ async def search_node(state: dict) -> dict:
                     "urls": [{"url": r.get("url", ""), "title": r.get("title", "")} for r in search_results]
                 })
 
-                if len(all_results) >= 6:
+                if len(all_results) >= cfg.source.max_total_results:
                     break
             except Exception as e:
                 logger.warning(f"[Product {product_id}]   Search failed for '{q}': {e}")
@@ -199,12 +205,12 @@ async def search_node(state: dict) -> dict:
             return results
 
         # ── Phase 1: Manufacturer-targeted search ──────────────────────────
-        if manufacturer_domain:
+        if manufacturer_domain and cfg.source.strategy != "any_source":
             update_step(product_id, "searching", f"Searching manufacturer site: {manufacturer_domain}...")
             try:
                 site_query = f"site:{manufacturer_domain} {mfr_query}"
                 logger.info(f"[Product {product_id}]   Phase 1 (manufacturer): '{site_query}'")
-                mfr_response = app.search(site_query, limit=5)
+                mfr_response = app.search(site_query, limit=cfg.source.max_manufacturer_results)
                 mfr_results = _parse_firecrawl_results(mfr_response)
                 all_results.extend(mfr_results)
 
@@ -228,12 +234,15 @@ async def search_node(state: dict) -> dict:
                 })
 
         # ── Phase 2: General search ────────────────────────────────────────
-        max_general_queries = 2 if (manufacturer_domain and all_results) else 3
+        if cfg.source.strategy == "any_source":
+            max_general_queries = cfg.source.max_general_queries
+        else:
+            max_general_queries = 2 if (manufacturer_domain and all_results) else cfg.source.max_general_queries
         for q in queries[:max_general_queries]:
             update_step(product_id, "searching", f"Searching (Firecrawl): {q[:50]}...")
             try:
                 logger.info(f"[Product {product_id}]   Phase 2 (general): '{q}'")
-                response = app.search(q, limit=7)
+                response = app.search(q, limit=cfg.source.max_general_results)
                 results_list = _parse_firecrawl_results(response)
                 num_results = len(results_list)
                 logger.info(f"[Product {product_id}]   → {num_results} results")
@@ -250,7 +259,7 @@ async def search_node(state: dict) -> dict:
                     "urls": [{"url": r.get("url", ""), "title": r.get("title", "")} for r in results_list]
                 })
 
-                if len(all_results) >= 6:
+                if len(all_results) >= cfg.source.max_total_results:
                     break
 
             except Exception as e:
@@ -320,7 +329,7 @@ Search results to classify:
             prompt=user_prompt,
             system=system_prompt,
             schema=SearchResultList,
-            model="haiku",
+            model=cfg.llm.search_model,
             return_usage=True
         )
 
