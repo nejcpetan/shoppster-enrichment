@@ -14,13 +14,15 @@ async def lookup_ean(ean: str) -> dict | None:
     Scrapes barcodelookup.com/{ean} via Firecrawl.
     Returns {brand: str, product_name: str, category: str} or None.
     """
-    api_key = os.getenv("FIRECRAWL_API_KEY")
-    if not api_key:
+    api_key = os.getenv("FIRECRAWL_API_KEY", "self-hosted")
+    api_url = os.getenv("FIRECRAWL_API_URL") or None
+
+    if not api_url and api_key == "self-hosted":
         print("Warning: FIRECRAWL_API_KEY not found. Skipping EAN lookup.")
         return None
 
     try:
-        app = FirecrawlApp(api_key=api_key)
+        app = FirecrawlApp(api_key=api_key, api_url=api_url) if api_url else FirecrawlApp(api_key=api_key)
 
         url = f"https://www.barcodelookup.com/{ean}"
         print(f"Scraping {url} for EAN lookup...")

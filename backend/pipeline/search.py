@@ -169,12 +169,14 @@ async def search_node(state: dict) -> dict:
 
     # ─── Provider: Firecrawl ──────────────────────────────────────────────────
     elif search_provider == "firecrawl":
-        fc_api_key = os.getenv("FIRECRAWL_API_KEY")
-        if not fc_api_key:
+        fc_api_key = os.getenv("FIRECRAWL_API_KEY", "self-hosted")
+        fc_api_url = cfg.source.firecrawl_api_url or os.getenv("FIRECRAWL_API_URL") or None
+
+        if not fc_api_url and fc_api_key == "self-hosted":
             return {"error": "FIRECRAWL_API_KEY not found"}
 
         from firecrawl import FirecrawlApp
-        app = FirecrawlApp(api_key=fc_api_key)
+        app = FirecrawlApp(api_key=fc_api_key, api_url=fc_api_url) if fc_api_url else FirecrawlApp(api_key=fc_api_key)
 
         def _parse_firecrawl_results(response) -> list:
             """Normalize Firecrawl search response to list of {url, title, content}."""

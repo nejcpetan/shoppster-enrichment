@@ -29,6 +29,10 @@ class SourceConfig(BaseModel):
     trust_third_party_as_primary: bool = False
     # If True, third-party sources are treated with same weight as authorized (Merkur mode)
 
+    firecrawl_api_url: str = ""
+    # Self-hosted Firecrawl endpoint. Empty = use cloud API (firecrawl.dev).
+    # e.g. "https://firecrawl.yourserver.com"
+
 
 class PipelineConfig(BaseModel):
     """Controls pipeline flow and behavior."""

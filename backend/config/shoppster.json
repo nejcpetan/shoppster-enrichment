@@ -10,7 +10,8 @@
         "max_total_results": 6,
         "allowed_domains": [],
         "blocked_domains": [],
-        "trust_third_party_as_primary": false
+        "trust_third_party_as_primary": false,
+        "firecrawl_api_url": "https://firecrawl.webfast.si"
     },
     "pipeline": {
         "enable_ean_lookup": true,

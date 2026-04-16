@@ -338,9 +338,10 @@ async def extract_node(state: dict) -> dict:
     image_source_map: Dict[str, str] = {}  # image URL → source page URL
     all_pdf_links: List[Dict[str, str]] = []
     source_type_by_url: Dict[str, str] = {}  # Maps page URL → source type for doc dedup
-    fc_api_key = os.getenv("FIRECRAWL_API_KEY")
+    fc_api_key = os.getenv("FIRECRAWL_API_KEY", "self-hosted")
+    fc_api_url = cfg.source.firecrawl_api_url or os.getenv("FIRECRAWL_API_URL") or None
 
-    if not fc_api_key:
+    if not fc_api_url and fc_api_key == "self-hosted":
         append_log(product_id, {
             "timestamp": datetime.now().isoformat(),
             "phase": "extract", "step": "init", "status": "error",
@@ -348,7 +349,7 @@ async def extract_node(state: dict) -> dict:
         })
         return {"error": "FIRECRAWL_API_KEY missing"}
 
-    firecrawl = FirecrawlApp(api_key=fc_api_key)
+    firecrawl = FirecrawlApp(api_key=fc_api_key, api_url=fc_api_url) if fc_api_url else FirecrawlApp(api_key=fc_api_key)
 
     # ── Process each URL ──────────────────────────────────────────────────
     for result in urls_to_process:
@@ -1465,7 +1466,7 @@ If you cannot determine, return value as null."""
             try:
                 conn = get_db_connection()
                 conn.execute(
-                    "INSERT OR REPLACE INTO brand_coo_cache (brand, country_of_origin, confidence) VALUES (?, ?, ?)",
+                    "INSERT INTO brand_coo_cache (brand, country_of_origin, confidence) VALUES (?, ?, ?) ON CONFLICT (brand) DO UPDATE SET country_of_origin = EXCLUDED.country_of_origin, confidence = EXCLUDED.confidence",
                     (brand, result.value, result.confidence)
                 )
                 conn.commit()
